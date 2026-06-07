@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MetaCleaner Pro | Stock Contributor Tool</title>
+    
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    
+    <!-- Icons -->
+    <link href="https://unpkg.com/boxicons@2.1.4/css/boxicons.min.css" rel="stylesheet">
+
+    <!-- CSS -->
+    <link rel="stylesheet" href="style.css">
+
+    <!-- CDN Libraries -->
+    <script src="https://cdn.jsdelivr.net/npm/exifr/dist/full.umd.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/piexifjs/1.0.6/piexif.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+</head>
+<body class="dark-theme">
+    <div class="bg-shape shape-1"></div>
+    <div class="bg-shape shape-2"></div>
+    
+    <div class="container">
+        <header>
+            <div class="logo">
+                <i class='bx bx-brush'></i>
+                <h1>MetaCleaner <span>Pro</span></h1>
+            </div>
+            <div class="privacy-badge">
+                <i class='bx bx-shield-quarter'></i>
+                <span>100% Client-Side • No Uploads</span>
+            </div>
+        </header>
+
+        <main>
+            <!-- Upload Section -->
+            <section class="upload-section" id="dropZone">
+                <div class="upload-content">
+                    <div class="upload-icon-wrapper">
+                        <i class='bx bx-cloud-upload'></i>
+                    </div>
+                    <h2>Drag & Drop Files Here</h2>
+                    <p>or <label for="fileInput" class="browse-link">click to browse</label></p>
+                    <span class="supported-formats">Supports: JPEG, PNG, WebP</span>
+                    <input type="file" id="fileInput" multiple accept="image/jpeg, image/png, image/webp" hidden>
+                </div>
+            </section>
+
+            <!-- Workspace Section (Hidden initially) -->
+            <section class="workspace-section" id="workspace" style="display: none;">
+                
+                <!-- Quick Actions -->
+                <div class="quick-actions glass-panel">
+                    <h3>Clean Modes</h3>
+                    <div class="action-buttons">
+                        <button class="btn btn-danger" id="btn-clear-all" title="Removes ALL metadata">
+                            <i class='bx bx-trash'></i> Clear All
+                        </button>
+                        <button class="btn btn-warning" id="btn-clear-private" title="Removes GPS, Camera Serial, Software info">
+                            <i class='bx bx-user-x'></i> Private Only
+                        </button>
+                        <button class="btn btn-success" id="btn-keep-stock" title="Keeps Title, Keywords, Copyright. Clears rest.">
+                            <i class='bx bx-check-shield'></i> Keep Stock Info
+                        </button>
+                    </div>
+                </div>
+
+                <div class="workspace-grid">
+                    <!-- File Queue -->
+                    <div class="file-queue glass-panel">
+                        <div class="panel-header">
+                            <h3>File Queue (<span id="fileCount">0</span>)</h3>
+                            <button id="btn-download-all" class="btn btn-primary btn-sm" disabled>
+                                <i class='bx bxs-file-archive'></i> Download All ZIP
+                            </button>
+                        </div>
+                        <ul id="fileList" class="file-list">
+                            <!-- File items will be injected here -->
+                        </ul>
+                    </div>
+
+                    <!-- Metadata Inspector -->
+                    <div class="metadata-inspector glass-panel">
+                        <div class="panel-header">
+                            <h3>Metadata Inspector</h3>
+                            <span id="selectedFileName" class="selected-file">Select a file</span>
+                        </div>
+                        <div class="inspector-content" id="inspectorContent">
+                            <div class="empty-state">
+                                <i class='bx bx-info-circle'></i>
+                                <p>Select a file from the queue to view its metadata</p>
+                            </div>
+                            <!-- Metadata details will be injected here -->
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Script -->
+    <script src="app.js"></script>
+</body>
+</html>
