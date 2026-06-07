@@ -481,6 +481,74 @@ header {
     color: var(--warning);
 }
 
+/* File Type Icons (for non-image previews) */
+.file-type-icon {
+    width: 40px;
+    height: 40px;
+    border-radius: 6px;
+    margin-right: 1rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.2rem;
+    font-weight: 700;
+    flex-shrink: 0;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.file-type-icon.video-icon {
+    background: linear-gradient(135deg, rgba(239, 68, 68, 0.2), rgba(245, 158, 11, 0.2));
+    color: #f87171;
+    border: 1px solid rgba(239, 68, 68, 0.25);
+}
+
+.file-type-icon.vector-icon {
+    background: linear-gradient(135deg, rgba(16, 185, 129, 0.2), rgba(6, 182, 212, 0.2));
+    color: #34d399;
+    border: 1px solid rgba(16, 185, 129, 0.25);
+}
+
+/* File Category Badge */
+.file-category-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.1rem 0.4rem;
+    border-radius: 4px;
+    font-size: 0.65rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-right: 0.35rem;
+}
+
+.badge-image {
+    background: rgba(139, 92, 246, 0.15);
+    color: var(--accent-primary);
+}
+
+.badge-video {
+    background: rgba(239, 68, 68, 0.15);
+    color: #f87171;
+}
+
+.badge-vector {
+    background: rgba(16, 185, 129, 0.15);
+    color: #34d399;
+}
+
+/* Video thumbnail preview */
+.file-preview-video {
+    width: 40px;
+    height: 40px;
+    border-radius: 6px;
+    object-fit: cover;
+    margin-right: 1rem;
+    background: #000;
+    position: relative;
+}
+
 .action-download-single {
     margin-top: 1.5rem;
     display: flex;
