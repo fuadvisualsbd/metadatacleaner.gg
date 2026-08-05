@@ -24,8 +24,6 @@ const btnKeepStock = document.getElementById('btn-keep-stock');
 // Secret Code Elements
 const secretCodeInput = document.getElementById('secretCodeInput');
 const spoofPresets = document.getElementById('spoofPresets');
-const btnPresetUbuntu22 = document.getElementById('btn-preset-ubuntu22');
-const btnPresetUbuntu21 = document.getElementById('btn-preset-ubuntu21');
 const btnPresetWin10 = document.getElementById('btn-preset-win10');
 const btnPresetWin10_23 = document.getElementById('btn-preset-win10-23');
 const btnPresetWin11_24 = document.getElementById('btn-preset-win11-24');
@@ -131,8 +129,6 @@ function init() {
         });
     }
 
-    attachButtonAction(btnPresetUbuntu22, 'PRESET_UBUNTU_22');
-    attachButtonAction(btnPresetUbuntu21, 'PRESET_UBUNTU_21');
     attachButtonAction(btnPresetWin10, 'PRESET_WIN10');
     attachButtonAction(btnPresetWin10_23, 'PRESET_WIN10_23');
     attachButtonAction(btnPresetWin11_24, 'PRESET_WIN11_24');
@@ -1080,13 +1076,7 @@ async function processImage(fileObj, mode) {
     } else if (mode.startsWith('PRESET_')) {
         let softwareStr = "";
         let osStr = "";
-        if (mode === 'PRESET_UBUNTU_22') {
-            softwareStr = "Adobe Photoshop 23.0 (Linux)";
-            osStr = "Ubuntu 22.04 LTS";
-        } else if (mode === 'PRESET_UBUNTU_21') {
-            softwareStr = "Adobe Photoshop 22.0 (Linux)";
-            osStr = "Ubuntu 20.04 LTS";
-        } else if (mode === 'PRESET_WIN10') {
+        if (mode === 'PRESET_WIN10') {
             softwareStr = "Adobe Photoshop 21.0 (Windows)";
             osStr = "Windows 10";
         } else if (mode === 'PRESET_WIN10_23') {
