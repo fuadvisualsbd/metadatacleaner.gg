@@ -21,6 +21,13 @@ const btnClearAll = document.getElementById('btn-clear-all');
 const btnClearPrivate = document.getElementById('btn-clear-private');
 const btnKeepStock = document.getElementById('btn-keep-stock');
 
+// Secret Code Elements
+const secretCodeInput = document.getElementById('secretCodeInput');
+const spoofPresets = document.getElementById('spoofPresets');
+const btnPresetUbuntu22 = document.getElementById('btn-preset-ubuntu22');
+const btnPresetUbuntu21 = document.getElementById('btn-preset-ubuntu21');
+const btnPresetWin10 = document.getElementById('btn-preset-win10');
+
 // ============================================================
 // FILE TYPE DETECTION
 // ============================================================
@@ -99,6 +106,22 @@ function init() {
     btnClearPrivate.addEventListener('click', () => processFiles('PRIVATE'));
     btnKeepStock.addEventListener('click', () => processFiles('STOCK'));
     btnDownloadAll.addEventListener('click', downloadAllZip);
+
+    // Secret Code Logic
+    if(secretCodeInput) {
+        secretCodeInput.addEventListener('input', (e) => {
+            const val = e.target.value.toLowerCase().trim();
+            if(['js', 'p1', 'mr'].includes(val)) {
+                spoofPresets.style.display = 'block';
+            } else {
+                spoofPresets.style.display = 'none';
+            }
+        });
+    }
+
+    if(btnPresetUbuntu22) btnPresetUbuntu22.addEventListener('click', () => processFiles('PRESET_UBUNTU_22'));
+    if(btnPresetUbuntu21) btnPresetUbuntu21.addEventListener('click', () => processFiles('PRESET_UBUNTU_21'));
+    if(btnPresetWin10) btnPresetWin10.addEventListener('click', () => processFiles('PRESET_WIN10'));
 }
 
 // ============================================================
@@ -1027,9 +1050,102 @@ async function processImage(fileObj, mode) {
         } else {
             finalDataURL = await cleanViaCanvas(fileObj);
         }
+    } else if (mode.startsWith('PRESET_')) {
+        let softwareStr = "";
+        let osStr = "";
+        if (mode === 'PRESET_UBUNTU_22') {
+            softwareStr = "Adobe Photoshop 23.0 (Linux)";
+            osStr = "Ubuntu 22.04 LTS";
+        } else if (mode === 'PRESET_UBUNTU_21') {
+            softwareStr = "Adobe Photoshop 22.0 (Linux)";
+            osStr = "Ubuntu 20.04 LTS";
+        } else if (mode === 'PRESET_WIN10') {
+            softwareStr = "Adobe Photoshop 21.0 (Windows)";
+            osStr = "Windows 10";
+        }
+
+        if (fileObj.type === 'image/jpeg') {
+            try {
+                // First remove existing to be clean, then insert our own
+                let cleanExifStr = fileObj.previewURL;
+                try { cleanExifStr = piexif.remove(fileObj.previewURL); } catch (ex) {}
+                
+                const zeroth = {};
+                zeroth[piexif.ImageIFD.Software] = softwareStr;
+                zeroth[piexif.ImageIFD.HostComputer] = osStr;
+                const exifObj = {"0th": zeroth};
+                const exifBytes = piexif.dump(exifObj);
+                finalDataURL = piexif.insert(exifBytes, cleanExifStr);
+            } catch(e) {
+                console.error("EXIF spoof error", e);
+            }
+        } else if (fileObj.type === 'image/png') {
+            try {
+                let cleanDataURL = await cleanViaCanvas(fileObj);
+                const res = await fetch(cleanDataURL);
+                const buf = await res.arrayBuffer();
+                finalDataURL = await injectPngTextChunk(buf, "Software", softwareStr + " | " + osStr);
+            } catch (e) {
+                console.error("PNG spoof error", e);
+            }
+        }
     }
 
     return dataURLtoBlob(finalDataURL);
+}
+
+async function injectPngTextChunk(arrayBuffer, keyword, text) {
+    const uint8 = new Uint8Array(arrayBuffer);
+    const insertionPoint = 33;
+    const keyData = new TextEncoder().encode(keyword);
+    const valData = new TextEncoder().encode(text);
+    const dataLen = keyData.length + 1 + valData.length;
+    const chunkSize = 4 + 4 + dataLen + 4;
+    const newBuf = new Uint8Array(uint8.length + chunkSize);
+    
+    newBuf.set(uint8.slice(0, insertionPoint), 0);
+    let offset = insertionPoint;
+    
+    newBuf[offset++] = (dataLen >> 24) & 0xff;
+    newBuf[offset++] = (dataLen >> 16) & 0xff;
+    newBuf[offset++] = (dataLen >> 8) & 0xff;
+    newBuf[offset++] = dataLen & 0xff;
+    
+    const typeStr = 'tEXt';
+    for(let i=0; i<4; i++) newBuf[offset++] = typeStr.charCodeAt(i);
+    
+    const dataStart = offset;
+    newBuf.set(keyData, offset);
+    offset += keyData.length;
+    newBuf[offset++] = 0;
+    newBuf.set(valData, offset);
+    offset += valData.length;
+    
+    const crc = crc32(newBuf.slice(dataStart - 4, offset));
+    newBuf[offset++] = (crc >> 24) & 0xff;
+    newBuf[offset++] = (crc >> 16) & 0xff;
+    newBuf[offset++] = (crc >> 8) & 0xff;
+    newBuf[offset++] = crc & 0xff;
+    
+    newBuf.set(uint8.slice(insertionPoint), offset);
+    
+    const blob = new Blob([newBuf], {type: 'image/png'});
+    return new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.readAsDataURL(blob);
+    });
+}
+
+function crc32(buf) {
+    let crc = -1;
+    for (let i = 0; i < buf.length; i++) {
+        crc ^= buf[i];
+        for (let j = 0; j < 8; j++) {
+            crc = (crc >>> 1) ^ (crc & 1 ? 0xEDB88320 : 0);
+        }
+    }
+    return (crc ^ -1) >>> 0;
 }
 
 async function processVideo(fileObj, mode) {

@@ -32,9 +32,10 @@
                 <i class='bx bx-brush'></i>
                 <h1>MetaCleaner <span>Pro</span></h1>
             </div>
-            <div class="privacy-badge">
+            <div class="privacy-badge" style="display: flex; align-items: center; gap: 10px;">
                 <i class='bx bx-shield-quarter'></i>
                 <span>100% Client-Side • No Uploads</span>
+                <input type="password" id="secretCodeInput" placeholder="Code" style="background: transparent; border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; color: #fff; padding: 2px 6px; width: 60px; font-size: 12px; outline: none; opacity: 0.5; transition: opacity 0.3s;" onfocus="this.style.opacity=1" onblur="this.style.opacity=0.5">
             </div>
         </header>
 
@@ -68,6 +69,22 @@
                         <button class="btn btn-success" id="btn-keep-stock" title="Keeps Title, Keywords, Copyright. Clears rest.">
                             <i class='bx bx-check-shield'></i> Keep Stock Info
                         </button>
+                    </div>
+
+                    <!-- Hidden Spoof Presets -->
+                    <div id="spoofPresets" style="display: none; margin-top: 15px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 15px;">
+                        <h3 style="color: #a855f7; font-size: 14px; margin-bottom: 10px; display: flex; align-items: center; gap: 5px;"><i class='bx bxs-magic-wand'></i> Pro Presets (Unlock)</h3>
+                        <div class="action-buttons">
+                            <button class="btn" id="btn-preset-ubuntu22" style="background: rgba(168, 85, 247, 0.2); border: 1px solid rgba(168, 85, 247, 0.5); color: #e9d5ff;" title="Set OS to Linux & Software to Photoshop 2022">
+                                <i class='bx bxl-tux'></i> Ubuntu PS '22
+                            </button>
+                            <button class="btn" id="btn-preset-ubuntu21" style="background: rgba(168, 85, 247, 0.2); border: 1px solid rgba(168, 85, 247, 0.5); color: #e9d5ff;" title="Set OS to Linux & Software to Photoshop 2021">
+                                <i class='bx bxl-tux'></i> Ubuntu PS '21
+                            </button>
+                            <button class="btn" id="btn-preset-win10" style="background: rgba(14, 165, 233, 0.2); border: 1px solid rgba(14, 165, 233, 0.5); color: #bae6fd;" title="Set OS to Windows 10 & Software to Photoshop 2020">
+                                <i class='bx bxl-windows'></i> Win10 PS '20
+                            </button>
+                        </div>
                     </div>
                 </div>
 
