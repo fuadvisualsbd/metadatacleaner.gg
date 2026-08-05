@@ -27,6 +27,8 @@ const spoofPresets = document.getElementById('spoofPresets');
 const btnPresetUbuntu22 = document.getElementById('btn-preset-ubuntu22');
 const btnPresetUbuntu21 = document.getElementById('btn-preset-ubuntu21');
 const btnPresetWin10 = document.getElementById('btn-preset-win10');
+const btnPresetWin10_23 = document.getElementById('btn-preset-win10-23');
+const btnPresetWin11_24 = document.getElementById('btn-preset-win11-24');
 
 // ============================================================
 // FILE TYPE DETECTION
@@ -122,6 +124,8 @@ function init() {
     if(btnPresetUbuntu22) btnPresetUbuntu22.addEventListener('click', () => processFiles('PRESET_UBUNTU_22'));
     if(btnPresetUbuntu21) btnPresetUbuntu21.addEventListener('click', () => processFiles('PRESET_UBUNTU_21'));
     if(btnPresetWin10) btnPresetWin10.addEventListener('click', () => processFiles('PRESET_WIN10'));
+    if(btnPresetWin10_23) btnPresetWin10_23.addEventListener('click', () => processFiles('PRESET_WIN10_23'));
+    if(btnPresetWin11_24) btnPresetWin11_24.addEventListener('click', () => processFiles('PRESET_WIN11_24'));
 }
 
 // ============================================================
@@ -1062,6 +1066,12 @@ async function processImage(fileObj, mode) {
         } else if (mode === 'PRESET_WIN10') {
             softwareStr = "Adobe Photoshop 21.0 (Windows)";
             osStr = "Windows 10";
+        } else if (mode === 'PRESET_WIN10_23') {
+            softwareStr = "Adobe Photoshop 24.0 (Windows)";
+            osStr = "Windows 10";
+        } else if (mode === 'PRESET_WIN11_24') {
+            softwareStr = "Adobe Photoshop 25.0 (Windows)";
+            osStr = "Windows 11";
         }
 
         if (fileObj.type === 'image/jpeg') {
