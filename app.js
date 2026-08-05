@@ -1007,7 +1007,7 @@ async function processFiles(mode) {
             try {
                 const newBuffer = await cleanBlob.arrayBuffer();
                 if (fileObj.category === 'image') {
-                    fileObj.metadata = await exifr.parse(cleanBlob, { xmp: true, iptc: true, exif: true, gps: true }) || {};
+                    fileObj.metadata = await extractImageMetadata(newBuffer, fileObj);
                 } else if (fileObj.category === 'video') {
                     fileObj.metadata = await extractVideoMetadata(newBuffer, fileObj.originalFile);
                 } else if (fileObj.category === 'vector') {
