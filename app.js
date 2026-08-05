@@ -103,12 +103,22 @@ function init() {
         handleFiles(e.target.files);
     });
 
-    // Actions
-    btnClearAll.addEventListener('click', () => processFiles('ALL'));
-    btnClearPrivate.addEventListener('click', () => processFiles('PRIVATE'));
-    btnKeepStock.addEventListener('click', () => processFiles('STOCK'));
-    btnDownloadAll.addEventListener('click', downloadAllZip);
+    // Helper for button feedback
+    function attachButtonAction(btn, mode, text, icon) {
+        if (!btn) return;
+        btn.addEventListener('click', async function() {
+            const originalHtml = this.innerHTML;
+            this.innerHTML = `<i class='bx bx-loader-alt bx-spin'></i> Applying...`;
+            await processFiles(mode);
+            this.innerHTML = originalHtml;
+        });
+    }
 
+    // Actions
+    attachButtonAction(btnClearAll, 'ALL');
+    attachButtonAction(btnClearPrivate, 'PRIVATE');
+    attachButtonAction(btnKeepStock, 'STOCK');
+    
     // Secret Code Logic
     if(secretCodeInput) {
         secretCodeInput.addEventListener('input', (e) => {
@@ -121,11 +131,13 @@ function init() {
         });
     }
 
-    if(btnPresetUbuntu22) btnPresetUbuntu22.addEventListener('click', () => processFiles('PRESET_UBUNTU_22'));
-    if(btnPresetUbuntu21) btnPresetUbuntu21.addEventListener('click', () => processFiles('PRESET_UBUNTU_21'));
-    if(btnPresetWin10) btnPresetWin10.addEventListener('click', () => processFiles('PRESET_WIN10'));
-    if(btnPresetWin10_23) btnPresetWin10_23.addEventListener('click', () => processFiles('PRESET_WIN10_23'));
-    if(btnPresetWin11_24) btnPresetWin11_24.addEventListener('click', () => processFiles('PRESET_WIN11_24'));
+    attachButtonAction(btnPresetUbuntu22, 'PRESET_UBUNTU_22');
+    attachButtonAction(btnPresetUbuntu21, 'PRESET_UBUNTU_21');
+    attachButtonAction(btnPresetWin10, 'PRESET_WIN10');
+    attachButtonAction(btnPresetWin10_23, 'PRESET_WIN10_23');
+    attachButtonAction(btnPresetWin11_24, 'PRESET_WIN11_24');
+    
+    btnDownloadAll.addEventListener('click', downloadAllZip);
 }
 
 // ============================================================
@@ -986,9 +998,18 @@ function cleanGenericVideoXmp(arrayBuffer, mode) {
 // ============================================================
 
 async function processFiles(mode) {
-    for (let fileObj of filesList) {
-        if (fileObj.status === 'cleaned') continue;
+    // Set all to processing (UI update)
+    filesList.forEach(f => {
+        f.status = 'processing';
+        const el = document.getElementById(f.id);
+        if (el) {
+            const statusDiv = el.querySelector('.file-status');
+            statusDiv.innerHTML = '<i class="bx bx-loader-alt bx-spin"></i> Processing...';
+            statusDiv.className = 'file-status status-processing';
+        }
+    });
 
+    for (let fileObj of filesList) {
         let cleanBlob = null;
 
         if (fileObj.category === 'image') {
