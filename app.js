@@ -1003,9 +1003,11 @@ async function processFiles(mode) {
         f.status = 'processing';
         const el = document.getElementById(f.id);
         if (el) {
-            const statusDiv = el.querySelector('.file-status');
-            statusDiv.innerHTML = '<i class="bx bx-loader-alt bx-spin"></i> Processing...';
-            statusDiv.className = 'file-status status-processing';
+            const statusDiv = el.querySelector('.status-badge');
+            if (statusDiv) {
+                statusDiv.innerHTML = '<i class="bx bx-loader-alt bx-spin"></i> Processing...';
+                statusDiv.className = 'status-badge status-processing';
+            }
         }
     });
 
