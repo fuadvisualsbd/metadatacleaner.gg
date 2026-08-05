@@ -1333,7 +1333,7 @@ function renderImageMetadata(m, fileObj) {
     let html = '';
 
     // Camera Category
-    if (m.Make || m.Model || m.LensModel || m.ISO || m.FNumber) {
+    if (m.Make || m.Model || m.LensModel || m.ISO || m.FNumber || m.Software || m.HostComputer) {
         html += `
         <div class="meta-category">
             <div class="meta-category-header"><i class='bx bx-camera'></i> Camera & EXIF</div>
@@ -1345,6 +1345,7 @@ function renderImageMetadata(m, fileObj) {
                 ${m.FNumber ? `<tr><th>Aperture</th><td>f/${m.FNumber}</td></tr>` : ''}
                 ${m.ExposureTime ? `<tr><th>Shutter</th><td>1/${Math.round(1/m.ExposureTime)}s</td></tr>` : ''}
                 ${m.Software ? `<tr><th>Software</th><td class="val-warning">${m.Software}</td></tr>` : ''}
+                ${m.HostComputer ? `<tr><th>Host Computer</th><td class="val-warning">${m.HostComputer}</td></tr>` : ''}
             </table>
         </div>`;
     }
@@ -1399,7 +1400,7 @@ function renderImageMetadata(m, fileObj) {
     }
 
     // Raw data
-    html += renderRawMetadata(m, new Set([...xmpKeys, 'Make', 'Model', 'LensModel', 'ISO', 'FNumber', 'ExposureTime', 'Software',
+    html += renderRawMetadata(m, new Set([...xmpKeys, 'Make', 'Model', 'LensModel', 'ISO', 'FNumber', 'ExposureTime', 'Software', 'HostComputer',
         'latitude', 'longitude', 'ObjectName', 'title', 'Keywords', 'subject', 'Copyright', 'rights', 'Creator', 'creator', 'Caption']));
 
     return html;
