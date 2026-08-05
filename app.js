@@ -1116,8 +1116,13 @@ async function processImage(fileObj, mode) {
             try {
                 let cleanDataURL = await cleanViaCanvas(fileObj);
                 const res = await fetch(cleanDataURL);
-                const buf = await res.arrayBuffer();
-                finalDataURL = await injectPngTextChunk(buf, "Software", softwareStr + " | " + osStr);
+                let buf = await res.arrayBuffer();
+                // Inject tEXt Software chunk
+                const withSoftware = await injectPngTextChunk(buf, "Software", softwareStr);
+                // Now inject XMP iTXt chunk with realistic Photoshop metadata
+                const res2 = await fetch(withSoftware);
+                const buf2 = await res2.arrayBuffer();
+                finalDataURL = await injectPngXmpChunk(buf2, softwareStr, osStr);
             } catch (e) {
                 console.error("PNG spoof error", e);
             }
@@ -1181,6 +1186,134 @@ function crc32(buf) {
     return (crc ^ -1) >>> 0;
 }
 
+function generateXmpUUID() {
+    // Generate a realistic xmp.iid / xmp.did style UUID
+    const hex = '0123456789ABCDEF';
+    let id = '';
+    for (let i = 0; i < 32; i++) id += hex[Math.floor(Math.random() * 16)];
+    return id;
+}
+
+async function injectPngXmpChunk(arrayBuffer, softwareStr, osStr) {
+    const uint8 = new Uint8Array(arrayBuffer);
+    
+    // Generate realistic Photoshop XMP UUIDs
+    const iid = generateXmpUUID();
+    const did = generateXmpUUID();
+    const origDid = generateXmpUUID();
+    const origIid = generateXmpUUID();
+    
+    // Create a realistic date string
+    const now = new Date();
+    const isoDate = now.toISOString().replace(/\.\d{3}Z$/, '+06:00');
+    
+    // Build XMP packet that looks like real Photoshop output
+    const xmpStr = `<?xpacket begin="\uFEFF" id="W5M0MpCehiHzreSzNTczkc9d"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/">
+ <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+  <rdf:Description rdf:about=""
+    xmlns:xmp="http://ns.adobe.com/xap/1.0/"
+    xmlns:dc="http://purl.org/dc/elements/1.1/"
+    xmlns:xmpMM="http://ns.adobe.com/xap/1.0/mm/"
+    xmlns:stEvt="http://ns.adobe.com/xap/1.0/sType/ResourceEvent#"
+    xmlns:stRef="http://ns.adobe.com/xap/1.0/sType/ResourceRef#"
+    xmlns:photoshop="http://ns.adobe.com/photoshop/1.0/"
+   xmp:CreatorTool="${softwareStr}"
+   xmp:CreateDate="${isoDate}"
+   xmp:ModifyDate="${isoDate}"
+   xmp:MetadataDate="${isoDate}"
+   dc:format="image/png"
+   xmpMM:InstanceID="xmp.iid:${iid}"
+   xmpMM:DocumentID="xmp.did:${did}"
+   xmpMM:OriginalDocumentID="xmp.did:${origDid}"
+   photoshop:ColorMode="3"
+   photoshop:ICCProfile="sRGB IEC61966-2.1">
+   <xmpMM:History>
+    <rdf:Seq>
+     <rdf:li
+      stEvt:action="created"
+      stEvt:instanceID="xmp.iid:${origIid}"
+      stEvt:when="${isoDate}"
+      stEvt:softwareAgent="${softwareStr}"/>
+     <rdf:li
+      stEvt:action="saved"
+      stEvt:instanceID="xmp.iid:${iid}"
+      stEvt:when="${isoDate}"
+      stEvt:softwareAgent="${softwareStr}"
+      stEvt:changed="/"/>
+    </rdf:Seq>
+   </xmpMM:History>
+   <xmpMM:DerivedFrom
+    stRef:instanceID="xmp.iid:${origIid}"
+    stRef:documentID="xmp.did:${origDid}"/>
+  </rdf:Description>
+ </rdf:RDF>
+</x:xmpmeta>
+<?xpacket end="w"?>`;
+
+    // Encode as iTXt chunk (keyword = "XML:com.adobe.xmp")
+    const keyword = "XML:com.adobe.xmp";
+    const keyBytes = new TextEncoder().encode(keyword);
+    const xmpBytes = new TextEncoder().encode(xmpStr);
+    
+    // iTXt chunk data: keyword + null + compressionFlag(0) + compressionMethod(0) + languageTag("") + null + translatedKeyword("") + null + text
+    const dataLen = keyBytes.length + 1 + 1 + 1 + 0 + 1 + 0 + 1 + xmpBytes.length;
+    const chunkSize = 4 + 4 + dataLen + 4; // length + type + data + crc
+    
+    // Find insertion point after IHDR (byte 33)
+    const insertionPoint = 33;
+    const newBuf = new Uint8Array(uint8.length + chunkSize);
+    
+    newBuf.set(uint8.slice(0, insertionPoint), 0);
+    let offset = insertionPoint;
+    
+    // Data length (4 bytes big-endian)
+    newBuf[offset++] = (dataLen >> 24) & 0xff;
+    newBuf[offset++] = (dataLen >> 16) & 0xff;
+    newBuf[offset++] = (dataLen >> 8) & 0xff;
+    newBuf[offset++] = dataLen & 0xff;
+    
+    // Chunk type "iTXt"
+    const typeStr = 'iTXt';
+    for (let i = 0; i < 4; i++) newBuf[offset++] = typeStr.charCodeAt(i);
+    
+    const dataStart = offset;
+    
+    // Keyword
+    newBuf.set(keyBytes, offset);
+    offset += keyBytes.length;
+    newBuf[offset++] = 0; // null separator
+    
+    // Compression flag (0 = uncompressed)
+    newBuf[offset++] = 0;
+    // Compression method (0)
+    newBuf[offset++] = 0;
+    // Language tag (empty string + null)
+    newBuf[offset++] = 0;
+    // Translated keyword (empty string + null)  
+    newBuf[offset++] = 0;
+    
+    // XMP text
+    newBuf.set(xmpBytes, offset);
+    offset += xmpBytes.length;
+    
+    // CRC32
+    const crc = crc32(newBuf.slice(dataStart - 4, offset));
+    newBuf[offset++] = (crc >> 24) & 0xff;
+    newBuf[offset++] = (crc >> 16) & 0xff;
+    newBuf[offset++] = (crc >> 8) & 0xff;
+    newBuf[offset++] = crc & 0xff;
+    
+    // Rest of the file
+    newBuf.set(uint8.slice(insertionPoint), offset);
+    
+    const blob = new Blob([newBuf], {type: 'image/png'});
+    return new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.readAsDataURL(blob);
+    });
+}
 async function processVideo(fileObj, mode) {
     const cleanedBuffer = cleanVideoFile(fileObj.originalArrayBuffer, fileObj.originalFile, mode);
     return new Blob([cleanedBuffer], { type: fileObj.type || 'video/mp4' });
@@ -1356,7 +1489,7 @@ function renderImageMetadata(m, fileObj) {
     let html = '';
 
     // Camera Category
-    if (m.Make || m.Model || m.LensModel || m.ISO || m.FNumber || m.Software || m.HostComputer) {
+    if (m.Make || m.Model || m.LensModel || m.ISO || m.FNumber || m.Software || m.HostComputer || m.CreatorTool) {
         html += `
         <div class="meta-category">
             <div class="meta-category-header"><i class='bx bx-camera'></i> Camera & EXIF</div>
@@ -1368,6 +1501,7 @@ function renderImageMetadata(m, fileObj) {
                 ${m.FNumber ? `<tr><th>Aperture</th><td>f/${m.FNumber}</td></tr>` : ''}
                 ${m.ExposureTime ? `<tr><th>Shutter</th><td>1/${Math.round(1/m.ExposureTime)}s</td></tr>` : ''}
                 ${m.Software ? `<tr><th>Software</th><td class="val-warning">${m.Software}</td></tr>` : ''}
+                ${m.CreatorTool ? `<tr><th>CreatorTool</th><td class="val-warning">${m.CreatorTool}</td></tr>` : ''}
                 ${m.HostComputer ? `<tr><th>Host Computer</th><td class="val-warning">${m.HostComputer}</td></tr>` : ''}
             </table>
         </div>`;
@@ -1423,7 +1557,7 @@ function renderImageMetadata(m, fileObj) {
     }
 
     // Raw data
-    html += renderRawMetadata(m, new Set([...xmpKeys, 'Make', 'Model', 'LensModel', 'ISO', 'FNumber', 'ExposureTime', 'Software', 'HostComputer',
+    html += renderRawMetadata(m, new Set([...xmpKeys, 'Make', 'Model', 'LensModel', 'ISO', 'FNumber', 'ExposureTime', 'Software', 'HostComputer', 'CreatorTool',
         'latitude', 'longitude', 'ObjectName', 'title', 'Keywords', 'subject', 'Copyright', 'rights', 'Creator', 'creator', 'Caption']));
 
     return html;
