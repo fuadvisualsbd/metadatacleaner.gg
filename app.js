@@ -1796,11 +1796,7 @@ window.downloadSingleFile = function (id) {
     const fileObj = filesList.find(f => f.id === id);
     if (!fileObj || !fileObj.cleanBlob) return;
 
-    const parts = fileObj.name.split('.');
-    const ext = parts.pop();
-    const newName = parts.join('.') + '_clean.' + ext;
-
-    saveAs(fileObj.cleanBlob, newName);
+    saveAs(fileObj.cleanBlob, fileObj.name);
 }
 
 async function downloadAllZip() {
@@ -1813,13 +1809,9 @@ async function downloadAllZip() {
     btnDownloadAll.disabled = true;
 
     for (const fileObj of cleanedFiles) {
-        const parts = fileObj.name.split('.');
-        const ext = parts.pop();
-        const newName = parts.join('.') + '_clean.' + ext;
-
         // Convert blob to ArrayBuffer for JSZip
         const buffer = await fileObj.cleanBlob.arrayBuffer();
-        zip.file(newName, buffer);
+        zip.file(fileObj.name, buffer);
     }
 
     try {
