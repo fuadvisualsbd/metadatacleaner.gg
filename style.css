@@ -574,3 +574,103 @@ header {
         justify-content: center;
     }
 }
+
+/* ============================================================
+   C2PA / CONTENT CREDENTIALS STYLES
+   ============================================================ */
+
+.status-badge.c2pa-badge {
+    background: rgba(239, 68, 68, 0.2);
+    color: #f87171;
+    border: 1px solid rgba(239, 68, 68, 0.35);
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    font-weight: 700;
+}
+
+.meta-category.c2pa-category {
+    border: 1px solid rgba(239, 68, 68, 0.35);
+    background: linear-gradient(180deg, rgba(239, 68, 68, 0.08) 0%, rgba(15, 17, 21, 0.4) 100%);
+    box-shadow: 0 4px 20px rgba(239, 68, 68, 0.08);
+}
+
+.c2pa-category-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    color: #f87171;
+}
+
+.c2pa-status-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 8px;
+    border-radius: 100px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    background: rgba(239, 68, 68, 0.2);
+    color: #fca5a5;
+    border: 1px solid rgba(239, 68, 68, 0.4);
+}
+
+.c2pa-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    background: rgba(139, 92, 246, 0.15);
+    color: #c4b5fd;
+    border: 1px solid rgba(139, 92, 246, 0.3);
+    margin: 2px 4px 2px 0;
+}
+
+.c2pa-pill.pill-danger {
+    background: rgba(239, 68, 68, 0.15);
+    color: #fca5a5;
+    border-color: rgba(239, 68, 68, 0.3);
+}
+
+.c2pa-pill.pill-warning {
+    background: rgba(245, 158, 11, 0.15);
+    color: #fcd34d;
+    border-color: rgba(245, 158, 11, 0.3);
+}
+
+.c2pa-pill.pill-success {
+    background: rgba(16, 185, 129, 0.15);
+    color: #6ee7b7;
+    border-color: rgba(16, 185, 129, 0.3);
+}
+
+.c2pa-tree-box {
+    background: rgba(0, 0, 0, 0.4);
+    padding: 10px 12px;
+    border-radius: 6px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 0.78rem;
+    line-height: 1.5;
+    color: #cbd5e1;
+    max-height: 200px;
+    overflow-y: auto;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.c2pa-quick-strip {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 14px;
+    background: rgba(239, 68, 68, 0.1);
+    border-top: 1px solid rgba(239, 68, 68, 0.2);
+}
+
+.c2pa-quick-strip span {
+    font-size: 0.8rem;
+    color: #fca5a5;
+}
+

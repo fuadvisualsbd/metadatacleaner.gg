@@ -202,7 +202,658 @@ async function handleFiles(files) {
 }
 
 // ============================================================
-// IMAGE METADATA (existing logic, refactored)
+// C2PA / CONTENT CREDENTIALS ENGINE (Detection, Parsing, Stripping)
+// ============================================================
+
+const C2PA_MP4_UUID = [0xd8, 0xfe, 0xc3, 0xd6, 0x1b, 0x0e, 0x48, 0x3c, 0x92, 0x97, 0x58, 0x28, 0x87, 0x7e, 0xc4, 0x81];
+
+// Master C2PA detection and extraction function
+function detectAndExtractC2PA(arrayBuffer, fileType, fileName) {
+    const ext = (fileName || '').split('.').pop().toLowerCase();
+    let result = {
+        found: false,
+        format: null,
+        totalSize: 0,
+        boxTree: [],
+        generator: null,
+        actions: [],
+        isAiGenerated: false,
+        aiPrompt: null,
+        signer: null,
+        signatureAlgo: null,
+        timestamp: null,
+        rawStrings: [],
+        manifestData: null
+    };
+
+    if (!arrayBuffer || arrayBuffer.byteLength < 16) return result;
+
+    const uint8 = new Uint8Array(arrayBuffer);
+
+    // 1. JPEG Detection (APP11 markers containing JUMBF 'jumb' / 'JP' / C2PA)
+    if (ext === 'jpg' || ext === 'jpeg' || fileType === 'image/jpeg') {
+        const jpegRes = scanJpegForC2PA(uint8);
+        if (jpegRes.found) {
+            result.found = true;
+            result.format = 'JPEG APP11 (JUMBF)';
+            result.totalSize = jpegRes.totalBytes;
+            result.manifestData = jpegRes.combinedData;
+        }
+    }
+    // 2. PNG Detection (caBX chunk)
+    else if (ext === 'png' || fileType === 'image/png') {
+        const pngRes = scanPngForC2PA(uint8);
+        if (pngRes.found) {
+            result.found = true;
+            result.format = 'PNG caBX Chunk (JUMBF)';
+            result.totalSize = pngRes.totalBytes;
+            result.manifestData = pngRes.data;
+        }
+    }
+    // 3. WebP Detection (RIFF c2pa chunk)
+    else if (ext === 'webp' || fileType === 'image/webp') {
+        const webpRes = scanWebpForC2PA(uint8);
+        if (webpRes.found) {
+            result.found = true;
+            result.format = 'WebP RIFF c2pa Chunk (JUMBF)';
+            result.totalSize = webpRes.totalBytes;
+            result.manifestData = webpRes.data;
+        }
+    }
+    // 4. MP4 / MOV Detection (UUID box with C2PA UUID or 'c2pa' atom)
+    else if (['mp4', 'mov', 'm4v'].includes(ext) || fileType === 'video/mp4' || fileType === 'video/quicktime') {
+        const mp4Res = scanMp4ForC2PA(uint8);
+        if (mp4Res.found) {
+            result.found = true;
+            result.format = 'MP4/MOV c2pa UUID Box (JUMBF)';
+            result.totalSize = mp4Res.totalBytes;
+            result.manifestData = mp4Res.data;
+        }
+    }
+
+    // 5. Generic scan fallback
+    if (!result.found) {
+        const genericRes = scanGenericForC2PA(uint8);
+        if (genericRes.found) {
+            result.found = true;
+            result.format = genericRes.format || 'Embedded C2PA / JUMBF';
+            result.totalSize = genericRes.totalBytes;
+            result.manifestData = genericRes.data;
+        }
+    }
+
+    // Parse JUMBF boxes and extract assertion metadata
+    if (result.found) {
+        const parseRes = parseJumbfAndAssertions(result.manifestData || uint8);
+        result.boxTree = parseRes.boxTree;
+        result.generator = parseRes.generator;
+        result.actions = parseRes.actions;
+        result.isAiGenerated = parseRes.isAiGenerated;
+        result.aiPrompt = parseRes.aiPrompt;
+        result.signer = parseRes.signer;
+        result.signatureAlgo = parseRes.signatureAlgo;
+        result.timestamp = parseRes.timestamp;
+        result.rawStrings = parseRes.rawStrings;
+    }
+
+    return result;
+}
+
+// --- JPEG APP11 Scanner ---
+function scanJpegForC2PA(uint8) {
+    if (uint8[0] !== 0xFF || uint8[1] !== 0xD8) return { found: false };
+
+    let offset = 2;
+    let found = false;
+    let totalBytes = 0;
+    const payloads = [];
+
+    while (offset < uint8.length - 4) {
+        if (uint8[offset] !== 0xFF) {
+            offset++;
+            continue;
+        }
+        while (offset < uint8.length && uint8[offset] === 0xFF) offset++;
+        if (offset >= uint8.length) break;
+
+        const marker = uint8[offset++];
+        if (marker === 0xDA || marker === 0xD9) break; // SOS or EOI
+        if (marker === 0x00 || (marker >= 0xD0 && marker <= 0xD7)) continue;
+
+        if (offset + 2 > uint8.length) break;
+        const len = (uint8[offset] << 8) | uint8[offset + 1];
+        if (len < 2 || offset + len > uint8.length) break;
+
+        const segDataOffset = offset + 2;
+        const segDataLen = len - 2;
+
+        if (marker === 0xEB) { // APP11
+            const isJumb = isJumbfData(uint8, segDataOffset, segDataLen);
+            if (isJumb) {
+                found = true;
+                totalBytes += len + 2;
+                payloads.push(uint8.slice(segDataOffset, segDataOffset + segDataLen));
+            }
+        }
+
+        offset += len;
+    }
+
+    let combinedData = null;
+    if (payloads.length === 1) {
+        combinedData = payloads[0];
+    } else if (payloads.length > 1) {
+        const totalLen = payloads.reduce((acc, p) => acc + p.length, 0);
+        combinedData = new Uint8Array(totalLen);
+        let pos = 0;
+        for (const p of payloads) {
+            combinedData.set(p, pos);
+            pos += p.length;
+        }
+    }
+
+    return { found, totalBytes, combinedData };
+}
+
+function isJumbfData(uint8, offset, len) {
+    if (len < 8) return false;
+    // Direct JUMBF SuperBox: [LBox 4b][jumb]
+    if (uint8[offset + 4] === 0x6A && uint8[offset + 5] === 0x75 && uint8[offset + 6] === 0x6D && uint8[offset + 7] === 0x62) {
+        return true;
+    }
+    // ISO 19566-5 APP11 encapsulation (starts with 'JP' = 0x4A, 0x50)
+    if (uint8[offset] === 0x4A && uint8[offset + 1] === 0x50) {
+        return true;
+    }
+    // Scan first 40 bytes for 'jumb' or 'c2pa'
+    const limit = Math.min(offset + len - 4, offset + 40);
+    for (let i = offset; i < limit; i++) {
+        if ((uint8[i] === 0x6A && uint8[i + 1] === 0x75 && uint8[i + 2] === 0x6D && uint8[i + 3] === 0x62) || // jumb
+            (uint8[i] === 0x63 && uint8[i + 1] === 0x32 && uint8[i + 2] === 0x70 && uint8[i + 3] === 0x61)) {  // c2pa
+            return true;
+        }
+    }
+    return false;
+}
+
+// --- PNG caBX Scanner ---
+function scanPngForC2PA(uint8) {
+    if (uint8.length < 8) return { found: false };
+    const sig = [137, 80, 78, 71, 13, 10, 26, 10];
+    for (let i = 0; i < 8; i++) {
+        if (uint8[i] !== sig[i]) return { found: false };
+    }
+
+    let offset = 8;
+    while (offset < uint8.length - 12) {
+        const len = (uint8[offset] << 24) | (uint8[offset + 1] << 16) | (uint8[offset + 2] << 8) | uint8[offset + 3];
+        const type = String.fromCharCode(uint8[offset + 4], uint8[offset + 5], uint8[offset + 6], uint8[offset + 7]);
+
+        if (type === 'caBX') {
+            const data = uint8.slice(offset + 8, offset + 8 + len);
+            return { found: true, totalBytes: len + 12, data };
+        }
+
+        offset += 12 + len;
+        if (type === 'IEND') break;
+    }
+
+    return { found: false };
+}
+
+// --- WebP RIFF c2pa Scanner ---
+function scanWebpForC2PA(uint8) {
+    if (uint8.length < 16) return { found: false };
+    const riff = String.fromCharCode(uint8[0], uint8[1], uint8[2], uint8[3]);
+    const webp = String.fromCharCode(uint8[8], uint8[9], uint8[10], uint8[11]);
+    if (riff !== 'RIFF' || webp !== 'WEBP') return { found: false };
+
+    let offset = 12;
+    while (offset < uint8.length - 8) {
+        const fourCC = String.fromCharCode(uint8[offset], uint8[offset + 1], uint8[offset + 2], uint8[offset + 3]);
+        const size = (uint8[offset + 4]) | (uint8[offset + 5] << 8) | (uint8[offset + 6] << 16) | (uint8[offset + 7] << 24);
+
+        if (fourCC === 'c2pa') {
+            const data = uint8.slice(offset + 8, offset + 8 + size);
+            return { found: true, totalBytes: size + 8, data };
+        }
+
+        offset += 8 + size + (size % 2);
+    }
+
+    return { found: false };
+}
+
+// --- MP4 / MOV UUID Box Scanner ---
+function scanMp4ForC2PA(uint8) {
+    if (uint8.length < 16) return { found: false };
+    const view = new DataView(uint8.buffer, uint8.byteOffset, uint8.byteLength);
+
+    function scanBoxes(start, end) {
+        let offset = start;
+        while (offset < end - 8) {
+            let size = view.getUint32(offset);
+            const type = String.fromCharCode(
+                uint8[offset + 4], uint8[offset + 5], uint8[offset + 6], uint8[offset + 7]
+            );
+
+            if (size === 0) size = end - offset;
+            if (size === 1 && offset + 16 <= end) {
+                const hi = view.getUint32(offset + 8);
+                const lo = view.getUint32(offset + 12);
+                size = hi * 0x100000000 + lo;
+            }
+            if (size < 8 || offset + size > end) break;
+
+            if (type === 'c2pa') {
+                return { found: true, totalBytes: size, data: uint8.slice(offset + 8, offset + size) };
+            }
+
+            if (type === 'uuid' && size >= 24) {
+                let match = true;
+                for (let i = 0; i < 16; i++) {
+                    if (uint8[offset + 8 + i] !== C2PA_MP4_UUID[i]) {
+                        match = false;
+                        break;
+                    }
+                }
+                if (match) {
+                    return { found: true, totalBytes: size, data: uint8.slice(offset + 24, offset + size) };
+                }
+            }
+
+            if (['moov', 'meta', 'trak', 'udta'].includes(type)) {
+                let innerStart = offset + 8;
+                if (type === 'meta') innerStart += 4;
+                const innerRes = scanBoxes(innerStart, offset + size);
+                if (innerRes.found) return innerRes;
+            }
+
+            offset += size;
+        }
+        return { found: false };
+    }
+
+    return scanBoxes(0, uint8.length);
+}
+
+// --- Generic JUMBF / C2PA String Scanner (fallback) ---
+function scanGenericForC2PA(uint8) {
+    if (uint8.length < 32) return { found: false };
+    const decoder = new TextDecoder('utf-8', { fatal: false });
+    const sample = decoder.decode(uint8.slice(0, Math.min(uint8.length, 65536)));
+
+    if (sample.includes('c2pa.assertions') || sample.includes('c2pa.claim') || sample.includes('c2pa.signature') || sample.includes('c2pa_manifest')) {
+        return { found: true, totalBytes: uint8.length, format: 'Embedded C2PA Provenance', data: uint8 };
+    }
+    return { found: false };
+}
+
+// --- JUMBF Box & Assertion Parser ---
+function parseJumbfAndAssertions(uint8) {
+    const res = {
+        boxTree: [],
+        generator: null,
+        actions: [],
+        isAiGenerated: false,
+        aiPrompt: null,
+        signer: null,
+        signatureAlgo: null,
+        timestamp: null,
+        rawStrings: []
+    };
+
+    if (!uint8 || uint8.length < 8) return res;
+
+    // 1. Box traversal
+    function traverseBoxes(bytes, start, end, depth) {
+        if (depth > 6) return;
+        let pos = start;
+        while (pos < end - 8) {
+            let lbox = (bytes[pos] << 24) | (bytes[pos + 1] << 16) | (bytes[pos + 2] << 8) | bytes[pos + 3];
+            let tbox = String.fromCharCode(bytes[pos + 4], bytes[pos + 5], bytes[pos + 6], bytes[pos + 7]);
+
+            if (tbox !== 'jumb' && tbox !== 'jumd' && tbox !== 'cbor' && tbox !== 'json' && tbox !== 'c2pa') {
+                const nextIdx = findAsciiSubstring(bytes, ['jumb', 'jumd', 'cbor'], pos, Math.min(pos + 64, end));
+                if (nextIdx !== -1 && nextIdx >= 4) {
+                    pos = nextIdx - 4;
+                    continue;
+                } else {
+                    break;
+                }
+            }
+
+            if (lbox < 8 || pos + lbox > end) {
+                lbox = end - pos;
+            }
+
+            let boxLabel = null;
+
+            if (tbox === 'jumb' && pos + 8 < end) {
+                const innerEnd = pos + lbox;
+                let jumdPos = pos + 8;
+                if (jumdPos + 8 <= innerEnd) {
+                    const jumdType = String.fromCharCode(bytes[jumdPos + 4], bytes[jumdPos + 5], bytes[jumdPos + 6], bytes[jumdPos + 7]);
+                    if (jumdType === 'jumd') {
+                        const jumdLen = (bytes[jumdPos] << 24) | (bytes[jumdPos + 1] << 16) | (bytes[jumdPos + 2] << 8) | bytes[jumdPos + 3];
+                        if (jumdPos + 25 < jumdPos + jumdLen) {
+                            let labelBytes = [];
+                            let lPos = jumdPos + 25;
+                            while (lPos < jumdPos + jumdLen && bytes[lPos] !== 0 && labelBytes.length < 64) {
+                                labelBytes.push(bytes[lPos++]);
+                            }
+                            if (labelBytes.length > 0) {
+                                boxLabel = new TextDecoder('latin1').decode(new Uint8Array(labelBytes));
+                            }
+                        }
+                    }
+                }
+                res.boxTree.push({ type: 'jumb', label: boxLabel || 'c2pa', size: lbox });
+                traverseBoxes(bytes, pos + 8, innerEnd, depth + 1);
+            } else {
+                res.boxTree.push({ type: tbox, label: boxLabel || tbox, size: lbox });
+            }
+
+            pos += lbox;
+        }
+    }
+
+    try {
+        traverseBoxes(uint8, 0, uint8.length, 0);
+    } catch (e) {
+        console.log("JUMBF box traversal:", e);
+    }
+
+    // 2. Deep UTF-8 & CBOR String Extraction
+    const decoder = new TextDecoder('utf-8', { fatal: false });
+    const fullText = decoder.decode(uint8);
+
+    // Extract Claim Generator / Tool
+    const genPatterns = [
+        /(?:claim_generator|claim_generator_info|softwareAgent|generator)["'\s:]+([a-zA-Z0-9_\-\.\s\(\)\/]{3,40}?)(?=[,\r\n\x00"]|$)/i,
+        /(Adobe\s+Firefly(?:\s+[\d\.]+)?)/i,
+        /(Adobe\s+Photoshop(?:\s+[\d\.]+)?)/i,
+        /(Midjourney(?:\s+v?[\d\.]+)?)/i,
+        /(DALL[·\- ]?E(?:\s+[\d\.]+)?)/i,
+        /(ChatGPT)/i,
+        /(Stable\s+Diffusion(?:\s+[\w\.\-]+)?)/i,
+        /(Google\s+Imagen(?:\s+[\d\.]+)?)/i,
+        /(Canva)/i,
+        /(Truepic[^\r\n,\x00"]*)/i,
+        /(Leica[^\r\n,\x00"]*)/i,
+        /(Nikon[^\r\n,\x00"]*)/i,
+        /(Sony[^\r\n,\x00"]*)/i
+    ];
+
+    for (const pat of genPatterns) {
+        const m = fullText.match(pat);
+        if (m && m[1] && m[1].trim().length > 2) {
+            let val = m[1].trim();
+            val = val.replace(/^[":\s]+|[",\s]+$/g, '').split(/[\r\n]/)[0].trim();
+            if (val && !res.generator) {
+                res.generator = val;
+                break;
+            }
+        }
+    }
+
+    // Extract Actions
+    const actionMap = {
+        'c2pa.created': 'Created',
+        'c2pa.edited': 'Edited',
+        'c2pa.placed': 'Placed (Composite)',
+        'c2pa.filtered': 'Filtered',
+        'c2pa.resized': 'Resized',
+        'c2pa.cropped': 'Cropped',
+        'c2pa.color_adjustments': 'Color Adjusted',
+        'c2pa.drawing': 'Drawing',
+        'c2pa.opened': 'Opened',
+        'c2pa.repackaged': 'Repackaged',
+        'c2pa.ai_generative_variation': 'AI Generative Variation',
+        'c2pa.ai_generative': 'AI Generative Content'
+    };
+
+    const detectedActions = new Set();
+    for (const [key, label] of Object.entries(actionMap)) {
+        if (fullText.includes(key)) {
+            detectedActions.add(label);
+        }
+    }
+    res.actions = Array.from(detectedActions);
+
+    // AI Generated Check
+    if (res.actions.some(a => a.includes('AI')) ||
+        fullText.includes('c2pa.ai_generative') ||
+        fullText.includes('trained_algorithmic_media') ||
+        fullText.includes('ai_metadata') ||
+        (res.generator && /(firefly|midjourney|dall|diffus|generat|openai)/i.test(res.generator))) {
+        res.isAiGenerated = true;
+    }
+
+    // Extract AI Prompt
+    const promptMatch = fullText.match(/(?:prompt|user_prompt|positive_prompt)["'\s:]+([^\x00-\x1f"'\\]{5,300})/i);
+    if (promptMatch && promptMatch[1]) {
+        res.aiPrompt = promptMatch[1].replace(/^[":\s]+|[",\s]+$/g, '').split(/[\r\n]/)[0].trim();
+    }
+
+    // Extract Signer (X.509 Common Name or Organization)
+    const signerPatterns = [
+        /(?:CN|O)\s*=\s*([a-zA-Z0-9_\-\.\s&]{3,40}?)(?=[,\r\n\x00"\/]|$)/i,
+        /(Adobe\s+Inc\.[^\r\n,\/\\<>"\x00]*)/i,
+        /(Truepic\s+Inc\.[^\r\n,\/\\<>"\x00]*)/i,
+        /(OpenAI[^\r\n,\/\\<>"\x00]*)/i,
+        /(Microsoft\s+Corporation[^\r\n,\/\\<>"\x00]*)/i,
+        /(Google\s+LLC[^\r\n,\/\\<>"\x00]*)/i,
+        /(DigiCert[^\r\n,\/\\<>"\x00]*)/i
+    ];
+
+    for (const pat of signerPatterns) {
+        const m = fullText.match(pat);
+        if (m && m[1] && m[1].trim().length > 2) {
+            let val = m[1].trim();
+            val = val.replace(/^[":\s=]+|[",\s]+$/g, '').split(/[\r\n]/)[0].trim();
+            if (val && !res.signer && !val.includes('http')) {
+                res.signer = val;
+                break;
+            }
+        }
+    }
+
+    // Signature Algorithm
+    const algoMatch = fullText.match(/(es256|ps256|ed25519|rs256|es384|es512)/i);
+    if (algoMatch) {
+        res.signatureAlgo = algoMatch[1].toUpperCase();
+    }
+
+    // Timestamp
+    const dateMatch = fullText.match(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})/);
+    if (dateMatch) {
+        res.timestamp = dateMatch[0];
+    }
+
+    // Collect interesting C2PA strings
+    const interesting = fullText.match(/(c2pa\.[a-zA-Z0-9_\.\-]+)/g);
+    if (interesting) {
+        res.rawStrings = Array.from(new Set(interesting)).slice(0, 12);
+    }
+
+    return res;
+}
+
+function findAsciiSubstring(bytes, targets, start, end) {
+    for (let i = start; i < end - 4; i++) {
+        for (const target of targets) {
+            let match = true;
+            for (let j = 0; j < target.length; j++) {
+                if (bytes[i + j] !== target.charCodeAt(j)) {
+                    match = false;
+                    break;
+                }
+            }
+            if (match) return i;
+        }
+    }
+    return -1;
+}
+
+// --- Stripper Functions ---
+
+// Strip APP11 (JUMBF / C2PA) markers from JPEG ArrayBuffer
+function stripJpegC2pa(arrayBuffer) {
+    const uint8 = new Uint8Array(arrayBuffer);
+    if (uint8[0] !== 0xFF || uint8[1] !== 0xD8) return arrayBuffer;
+
+    const chunks = [];
+    chunks.push({ start: 0, end: 2 }); // SOI
+
+    let offset = 2;
+    while (offset < uint8.length - 4) {
+        if (uint8[offset] !== 0xFF) {
+            chunks.push({ start: offset, end: offset + 1 });
+            offset++;
+            continue;
+        }
+        let markerStart = offset;
+        while (offset < uint8.length && uint8[offset] === 0xFF) offset++;
+        if (offset >= uint8.length) break;
+
+        const marker = uint8[offset++];
+        if (marker === 0xDA) { // SOS (Start of Scan)
+            chunks.push({ start: markerStart, end: uint8.length });
+            break;
+        }
+        if (marker === 0xD9) { // EOI
+            chunks.push({ start: markerStart, end: offset });
+            break;
+        }
+        if (marker === 0x00 || (marker >= 0xD0 && marker <= 0xD7)) {
+            chunks.push({ start: markerStart, end: offset });
+            continue;
+        }
+
+        if (offset + 2 > uint8.length) {
+            chunks.push({ start: markerStart, end: uint8.length });
+            break;
+        }
+
+        const len = (uint8[offset] << 8) | uint8[offset + 1];
+        const segEnd = offset + len;
+
+        if (marker === 0xEB) { // APP11 (JUMBF / C2PA)
+            // Skip this entire APP11 segment
+            offset = segEnd;
+            continue;
+        }
+
+        chunks.push({ start: markerStart, end: segEnd });
+        offset = segEnd;
+    }
+
+    const totalLen = chunks.reduce((acc, c) => acc + (c.end - c.start), 0);
+    const output = new Uint8Array(totalLen);
+    let writePos = 0;
+    for (const chunk of chunks) {
+        const slice = uint8.slice(chunk.start, chunk.end);
+        output.set(slice, writePos);
+        writePos += slice.length;
+    }
+
+    return output.buffer;
+}
+
+// Strip caBX chunk from PNG ArrayBuffer
+function stripPngC2pa(arrayBuffer) {
+    const uint8 = new Uint8Array(arrayBuffer);
+    if (uint8.length < 8) return arrayBuffer;
+
+    const chunks = [];
+    chunks.push({ start: 0, end: 8 }); // Header
+
+    let offset = 8;
+    while (offset < uint8.length - 12) {
+        const len = (uint8[offset] << 24) | (uint8[offset + 1] << 16) | (uint8[offset + 2] << 8) | uint8[offset + 3];
+        const type = String.fromCharCode(uint8[offset + 4], uint8[offset + 5], uint8[offset + 6], uint8[offset + 7]);
+        const chunkTotal = 12 + len;
+        const chunkEnd = offset + chunkTotal;
+
+        if (type === 'caBX') {
+            offset = chunkEnd;
+            continue;
+        }
+
+        if (type === 'iTXt' && len > 4) {
+            const keyword = new TextDecoder('latin1').decode(uint8.slice(offset + 8, Math.min(offset + 8 + 32, chunkEnd)));
+            if (keyword.startsWith('c2pa') || keyword.startsWith('caBX')) {
+                offset = chunkEnd;
+                continue;
+            }
+        }
+
+        chunks.push({ start: offset, end: chunkEnd });
+        offset = chunkEnd;
+        if (type === 'IEND') break;
+    }
+
+    const totalLen = chunks.reduce((acc, c) => acc + (c.end - c.start), 0);
+    const output = new Uint8Array(totalLen);
+    let writePos = 0;
+    for (const chunk of chunks) {
+        const slice = uint8.slice(chunk.start, chunk.end);
+        output.set(slice, writePos);
+        writePos += slice.length;
+    }
+
+    return output.buffer;
+}
+
+// Strip c2pa RIFF chunk from WebP ArrayBuffer
+function stripWebpC2pa(arrayBuffer) {
+    const uint8 = new Uint8Array(arrayBuffer);
+    if (uint8.length < 16) return arrayBuffer;
+
+    const riff = String.fromCharCode(uint8[0], uint8[1], uint8[2], uint8[3]);
+    const webp = String.fromCharCode(uint8[8], uint8[9], uint8[10], uint8[11]);
+    if (riff !== 'RIFF' || webp !== 'WEBP') return arrayBuffer;
+
+    const chunks = [];
+    chunks.push({ start: 0, end: 12 }); // RIFF header
+
+    let offset = 12;
+    while (offset < uint8.length - 8) {
+        const fourCC = String.fromCharCode(uint8[offset], uint8[offset + 1], uint8[offset + 2], uint8[offset + 3]);
+        const size = (uint8[offset + 4]) | (uint8[offset + 5] << 8) | (uint8[offset + 6] << 16) | (uint8[offset + 7] << 24);
+        const chunkTotal = 8 + size + (size % 2);
+        const chunkEnd = Math.min(offset + chunkTotal, uint8.length);
+
+        if (fourCC === 'c2pa') {
+            offset = chunkEnd;
+            continue;
+        }
+
+        chunks.push({ start: offset, end: chunkEnd });
+        offset = chunkEnd;
+    }
+
+    const totalLen = chunks.reduce((acc, c) => acc + (c.end - c.start), 0);
+    const output = new Uint8Array(totalLen);
+    let writePos = 0;
+    for (const chunk of chunks) {
+        const slice = uint8.slice(chunk.start, chunk.end);
+        output.set(slice, writePos);
+        writePos += slice.length;
+    }
+
+    const newRiffSize = totalLen - 8;
+    output[4] = newRiffSize & 0xFF;
+    output[5] = (newRiffSize >> 8) & 0xFF;
+    output[6] = (newRiffSize >> 16) & 0xFF;
+    output[7] = (newRiffSize >> 24) & 0xFF;
+
+    return output.buffer;
+}
+
+// ============================================================
+// IMAGE METADATA
 // ============================================================
 
 async function extractImageMetadata(arrayBuffer, file) {
@@ -241,6 +892,16 @@ async function extractImageMetadata(arrayBuffer, file) {
         }
     } catch (e) {
         console.error("XMP scan error", e);
+    }
+
+    // 4. C2PA / Content Credentials Detection
+    try {
+        const c2paData = detectAndExtractC2PA(arrayBuffer, file.type, file.name);
+        if (c2paData && c2paData.found) {
+            metadata.__c2pa = c2paData;
+        }
+    } catch (e) {
+        console.error("C2PA detection error:", e);
     }
 
     return metadata;
@@ -284,6 +945,16 @@ async function extractVideoMetadata(arrayBuffer, file) {
         } catch (e) {
             console.error("EBML parse error:", e);
         }
+    }
+
+    // 4. C2PA / Content Credentials Detection
+    try {
+        const c2paData = detectAndExtractC2PA(arrayBuffer, file.type, file.name);
+        if (c2paData && c2paData.found) {
+            metadata.__c2pa = c2paData;
+        }
+    } catch (e) {
+        console.error("Video C2PA detection error:", e);
     }
 
     return metadata;
@@ -844,7 +1515,7 @@ function cleanVideoFile(arrayBuffer, file, mode) {
 }
 
 function cleanMp4File(arrayBuffer, mode) {
-    // Strategy: Rebuild the file, excluding metadata atoms (udta, meta in moov)
+    // Strategy: Rebuild the file, excluding metadata atoms (udta, meta in moov) and C2PA uuid/c2pa boxes
     const view = new DataView(arrayBuffer);
     const chunks = []; // Ranges to keep
 
@@ -873,11 +1544,25 @@ function cleanMp4File(arrayBuffer, mode) {
 
             const atomEnd = offset + size;
 
-            // Decide whether to skip this atom
-            const isMetaAtom = (type === 'udta' || (type === 'meta' && parentType === 'moov'));
+            // Check if C2PA UUID box
+            let isC2paUuidBox = false;
+            if (type === 'uuid' && size >= 24) {
+                let match = true;
+                for (let i = 0; i < 16; i++) {
+                    if (view.getUint8(offset + 8 + i) !== C2PA_MP4_UUID[i]) {
+                        match = false;
+                        break;
+                    }
+                }
+                isC2paUuidBox = match;
+            }
 
-            if (mode === 'ALL' && isMetaAtom) {
-                // Skip entire udta/meta atoms (removes all metadata)
+            // Decide whether to skip this atom
+            const isC2paAtom = (type === 'c2pa' || isC2paUuidBox);
+            const isMetaAtom = (type === 'udta' || (type === 'meta' && parentType === 'moov') || isC2paAtom);
+
+            if ((mode === 'ALL' || isC2paAtom) && isMetaAtom) {
+                // Skip entire udta/meta/c2pa atoms (removes all metadata and C2PA)
                 offset = atomEnd;
                 continue;
             }
@@ -910,9 +1595,7 @@ function cleanMp4File(arrayBuffer, mode) {
         writeOffset += src.length;
     }
 
-    // Fix container atom sizes (moov, trak, etc.) - simplified approach:
-    // Since we only removed whole child atoms, the parent sizes need updating.
-    // For simplicity and reliability, we recalculate all container sizes.
+    // Fix container atom sizes (moov, trak, etc.)
     fixMp4ContainerSizes(output);
 
     return output.buffer;
@@ -936,18 +1619,13 @@ function fixMp4ContainerSizes(bytes) {
             if (origSize < 8 || offset + origSize > end) break;
 
             if (containerTypes.has(type)) {
-                // Recurse to fix children first
                 fixAtoms(offset + 8, offset + origSize);
-                // Recalculate this container's actual size
                 let childEnd = offset + 8;
                 while (childEnd < offset + origSize) {
                     const childSize = view.getUint32(childEnd);
                     if (childSize < 8) break;
                     childEnd += childSize;
                 }
-                // The container size should encompass header + all children
-                // Since we didn't change internal structure during collection,
-                // the sizes should still be correct from the chunk concatenation
             }
 
             offset += origSize;
@@ -967,21 +1645,18 @@ function cleanWebmFile(arrayBuffer, mode) {
 }
 
 function cleanGenericVideoXmp(arrayBuffer, mode) {
-    // Find and zero-out XMP blocks in the file
     const bytes = new Uint8Array(arrayBuffer);
     const decoder = new TextDecoder('utf-8', { fatal: false });
     const fullStr = decoder.decode(bytes);
 
     const xmpStart = fullStr.indexOf('<x:xmpmeta');
-    if (xmpStart === -1) return arrayBuffer; // No XMP found
+    if (xmpStart === -1) return arrayBuffer;
 
     const xmpEnd = fullStr.indexOf('</x:xmpmeta>', xmpStart);
     if (xmpEnd === -1) return arrayBuffer;
 
-    // Create a copy and blank out the XMP region with spaces (preserves file structure/offsets)
     const output = new Uint8Array(arrayBuffer.slice(0));
-    const encoder = new TextEncoder();
-    const space = 0x20; // space character
+    const space = 0x20;
     for (let i = xmpStart; i < xmpEnd + 12 && i < output.length; i++) {
         output[i] = space;
     }
@@ -1066,7 +1741,14 @@ async function processImage(fileObj, mode) {
     } else if (mode === 'PRIVATE' || mode === 'STOCK') {
         if (fileObj.type === 'image/jpeg') {
             try {
-                finalDataURL = piexif.remove(fileObj.previewURL);
+                let cleanExifDataURL = fileObj.previewURL;
+                try { cleanExifDataURL = piexif.remove(fileObj.previewURL); } catch (ex) {}
+
+                // Strip APP11 C2PA markers from JPEG bytes
+                const intermediateBlob = dataURLtoBlob(cleanExifDataURL);
+                const interBuf = await intermediateBlob.arrayBuffer();
+                const strippedBuf = stripJpegC2pa(interBuf);
+                return new Blob([strippedBuf], { type: 'image/jpeg' });
             } catch (e) {
                 finalDataURL = await cleanViaCanvas(fileObj);
             }
@@ -1089,16 +1771,15 @@ async function processImage(fileObj, mode) {
 
         if (fileObj.type === 'image/jpeg') {
             try {
-                // First remove existing to be clean, then insert our own
-                let cleanExifStr = fileObj.previewURL;
-                try { cleanExifStr = piexif.remove(fileObj.previewURL); } catch (ex) {}
+                // First canvas clean to wipe ALL original C2PA/EXIF metadata
+                let cleanCanvasURL = await cleanViaCanvas(fileObj);
                 
                 const zeroth = {};
                 zeroth[piexif.ImageIFD.Software] = softwareStr;
                 zeroth[piexif.ImageIFD.HostComputer] = osStr;
                 const exifObj = {"0th": zeroth};
                 const exifBytes = piexif.dump(exifObj);
-                finalDataURL = piexif.insert(exifBytes, cleanExifStr);
+                finalDataURL = piexif.insert(exifBytes, cleanCanvasURL);
             } catch(e) {
                 console.error("EXIF spoof error", e);
             }
@@ -1357,10 +2038,15 @@ function renderFileItem(fileObj) {
     li.id = fileObj.id;
     li.onclick = () => selectFile(fileObj.id);
 
-    // Check for sensitive metadata
+    // Check for sensitive metadata and C2PA
     let hasSensitiveData = false;
+    let hasC2pa = false;
     const m = fileObj.metadata;
     if (m) {
+        if (m.__c2pa && m.__c2pa.found) {
+            hasC2pa = true;
+            hasSensitiveData = true;
+        }
         if (fileObj.category === 'image') {
             if (m.latitude || m.longitude || m.Make || m.Model || m.ISO || m.FNumber) {
                 hasSensitiveData = true;
@@ -1381,7 +2067,9 @@ function renderFileItem(fileObj) {
     if (fileObj.status === 'cleaned') {
         statusBadge = `<span class="status-badge status-cleaned">Cleaned</span>`;
     } else {
-        if (hasSensitiveData) {
+        if (hasC2pa) {
+            statusBadge = `<span class="status-badge c2pa-badge" title="C2PA Content Credentials Active"><i class='bx bx-shield-quarter'></i> C2PA Active</span>`;
+        } else if (hasSensitiveData) {
             statusBadge = `<span class="status-badge" style="background: rgba(239, 68, 68, 0.2); color: var(--danger);"><i class='bx bx-error-circle'></i> Unsafe</span>`;
         } else {
             statusBadge = `<span class="status-badge status-pending">Pending</span>`;
@@ -1474,9 +2162,162 @@ function renderMetadataInspector(fileObj) {
     inspectorContent.innerHTML = html;
 }
 
-// --- Image metadata rendering (original logic) ---
+// --- C2PA Metadata Section Renderer ---
+function renderC2paMetadataSection(c2pa) {
+    if (!c2pa || !c2pa.found) return '';
+
+    let rows = '';
+
+    // Status & Format
+    rows += `<tr><th>C2PA Manifest</th><td><span class="val-highlight font-weight-bold">${escapeHtml(c2pa.format || 'Detected')}</span> (${formatBytes(c2pa.totalSize || 0)})</td></tr>`;
+
+    // Tool / Generator
+    if (c2pa.generator) {
+        rows += `<tr><th>Claim Generator / Tool</th><td class="val-warning"><strong>${escapeHtml(c2pa.generator)}</strong></td></tr>`;
+    }
+
+    // AI Content Classification
+    if (c2pa.isAiGenerated) {
+        rows += `<tr><th>AI Content Status</th><td><span class="c2pa-pill pill-danger"><i class='bx bx-bot'></i> AI Generated / Synthetic Media</span></td></tr>`;
+    }
+
+    // Actions
+    if (c2pa.actions && c2pa.actions.length > 0) {
+        const actionPills = c2pa.actions.map(act => {
+            let cls = 'c2pa-pill';
+            if (act.toLowerCase().includes('ai')) cls += ' pill-danger';
+            else if (act.toLowerCase().includes('edit') || act.toLowerCase().includes('filter')) cls += ' pill-warning';
+            else if (act.toLowerCase().includes('creat')) cls += ' pill-success';
+            return `<span class="${cls}">${escapeHtml(act)}</span>`;
+        }).join(' ');
+        rows += `<tr><th>Action History</th><td>${actionPills}</td></tr>`;
+    }
+
+    // Signer / Certificate
+    if (c2pa.signer) {
+        rows += `<tr><th>Signed By (Issuer)</th><td class="val-highlight"><i class='bx bx-check-shield' style="color: var(--success);"></i> ${escapeHtml(c2pa.signer)}</td></tr>`;
+    }
+
+    // Signature Algorithm
+    if (c2pa.signatureAlgo) {
+        rows += `<tr><th>Signature Type</th><td><code>${escapeHtml(c2pa.signatureAlgo.toUpperCase())}</code> (COSE_Sign1 / X.509)</td></tr>`;
+    }
+
+    // Timestamp
+    if (c2pa.timestamp) {
+        rows += `<tr><th>Signing Timestamp</th><td>${escapeHtml(c2pa.timestamp)}</td></tr>`;
+    }
+
+    // AI Prompt / Description
+    if (c2pa.aiPrompt) {
+        rows += `<tr><th>Prompt / Description</th><td style="word-break: break-word; font-style: italic;">"${escapeHtml(c2pa.aiPrompt)}"</td></tr>`;
+    }
+
+    // JUMBF Box Hierarchy Tree
+    if (c2pa.boxTree && c2pa.boxTree.length > 0) {
+        const treeItems = c2pa.boxTree.map(box => {
+            const icon = box.type === 'jumb' ? '📦' : (box.type === 'cbor' ? '📄' : '🏷️');
+            return `${icon} <strong>${escapeHtml(box.label || box.type)}</strong> <span style="opacity: 0.6;">[${box.type}, ${formatBytes(box.size)}]</span>`;
+        }).join('<br>');
+
+        rows += `<tr><th>JUMBF Structure</th><td><div class="c2pa-tree-box">${treeItems}</div></td></tr>`;
+    }
+
+    // Raw strings extracted
+    if (c2pa.rawStrings && c2pa.rawStrings.length > 0) {
+        const displayStrings = c2pa.rawStrings.slice(0, 10).map(s => escapeHtml(s)).join('<br>');
+        rows += `<tr><th>Extracted Identifiers</th><td><div class="c2pa-tree-box" style="max-height: 120px;">${displayStrings}</div></td></tr>`;
+    }
+
+    return `
+    <div class="meta-category c2pa-category">
+        <div class="meta-category-header c2pa-category-header">
+            <div style="display: flex; align-items: center; gap: 8px;">
+                <i class='bx bx-shield-quarter' style="font-size: 1.4rem; color: #f87171;"></i>
+                <span>C2PA / Content Credentials</span>
+            </div>
+            <span class="c2pa-status-pill"><i class='bx bxs-lock-alt'></i> Active & Signed</span>
+        </div>
+        <table class="meta-table">
+            ${rows}
+        </table>
+        <div class="c2pa-quick-strip">
+            <span><i class='bx bx-info-circle'></i> Cryptographic provenance & history data embedded.</span>
+            <button class="btn btn-danger btn-sm" onclick="cleanActiveFileC2PAOnly()">
+                <i class='bx bx-trash'></i> Strip C2PA Only
+            </button>
+        </div>
+    </div>`;
+}
+
+// Handler to strip C2PA only on the active file
+window.cleanActiveFileC2PAOnly = async function() {
+    if (!activeFileId) return;
+    const fileObj = filesList.find(f => f.id === activeFileId);
+    if (!fileObj) return;
+
+    const btn = document.querySelector('.c2pa-quick-strip .btn');
+    if (btn) btn.innerHTML = `<i class='bx bx-loader-alt bx-spin'></i> Stripping...`;
+
+    try {
+        let cleanBuffer = null;
+        const currentBuf = fileObj.cleanBlob ? await fileObj.cleanBlob.arrayBuffer() : fileObj.originalArrayBuffer;
+        const category = fileObj.category;
+        const ext = getFileExtension(fileObj.name);
+
+        if (category === 'image') {
+            if (ext === 'jpg' || ext === 'jpeg' || fileObj.type === 'image/jpeg') {
+                cleanBuffer = stripJpegC2pa(currentBuf);
+            } else if (ext === 'png' || fileObj.type === 'image/png') {
+                cleanBuffer = stripPngC2pa(currentBuf);
+            } else if (ext === 'webp' || fileObj.type === 'image/webp') {
+                cleanBuffer = stripWebpC2pa(currentBuf);
+            } else {
+                const cleanDataURL = await cleanViaCanvas(fileObj);
+                const blob = dataURLtoBlob(cleanDataURL);
+                cleanBuffer = await blob.arrayBuffer();
+            }
+        } else if (category === 'video') {
+            cleanBuffer = cleanVideoFile(currentBuf, fileObj.originalFile, 'ALL');
+        }
+
+        if (cleanBuffer) {
+            fileObj.cleanBlob = new Blob([cleanBuffer], { type: fileObj.type || 'image/jpeg' });
+            fileObj.status = 'cleaned';
+
+            // Re-extract metadata
+            const newBuf = await fileObj.cleanBlob.arrayBuffer();
+            if (category === 'image') {
+                fileObj.metadata = await extractImageMetadata(newBuf, fileObj);
+            } else if (category === 'video') {
+                fileObj.metadata = await extractVideoMetadata(newBuf, fileObj.originalFile);
+            }
+
+            updateQueueStats();
+            const el = document.getElementById(fileObj.id);
+            if (el) {
+                const statusDiv = el.querySelector('.status-badge');
+                if (statusDiv) {
+                    statusDiv.className = 'status-badge status-cleaned';
+                    statusDiv.innerHTML = 'Cleaned';
+                }
+            }
+            selectFile(fileObj.id);
+        }
+    } catch (e) {
+        console.error("Strip C2PA error:", e);
+        alert("Failed to strip C2PA: " + e.message);
+    }
+};
+
+// --- Image metadata rendering ---
 function renderImageMetadata(m, fileObj) {
     let html = '';
+
+    // C2PA Section (Rendered first if present)
+    if (m.__c2pa && m.__c2pa.found) {
+        html += renderC2paMetadataSection(m.__c2pa);
+    }
 
     // Camera Category
     if (m.Make || m.Model || m.LensModel || m.ISO || m.FNumber || m.Software || m.HostComputer || m.CreatorTool) {
@@ -1547,7 +2388,7 @@ function renderImageMetadata(m, fileObj) {
     }
 
     // Raw data
-    html += renderRawMetadata(m, new Set([...xmpKeys, 'Make', 'Model', 'LensModel', 'ISO', 'FNumber', 'ExposureTime', 'Software', 'HostComputer', 'CreatorTool',
+    html += renderRawMetadata(m, new Set([...xmpKeys, '__c2pa', 'Make', 'Model', 'LensModel', 'ISO', 'FNumber', 'ExposureTime', 'Software', 'HostComputer', 'CreatorTool',
         'latitude', 'longitude', 'ObjectName', 'title', 'Keywords', 'subject', 'Copyright', 'rights', 'Creator', 'creator', 'Caption']));
 
     return html;
@@ -1556,6 +2397,11 @@ function renderImageMetadata(m, fileObj) {
 // --- Video metadata rendering ---
 function renderVideoMetadata(m, fileObj) {
     let html = '';
+
+    // C2PA Section (Rendered first if present)
+    if (m.__c2pa && m.__c2pa.found) {
+        html += renderC2paMetadataSection(m.__c2pa);
+    }
 
     // Video Info
     const infoKeys = ['Duration', 'Creation Date', 'Modification Date', 'Format'];
@@ -1744,7 +2590,7 @@ function renderVectorMetadata(m, fileObj) {
 function renderRawMetadata(m, skipKeys) {
     let rawRows = '';
     for (const [key, value] of Object.entries(m)) {
-        if (skipKeys.has(key)) continue;
+        if (key === '__c2pa' || (skipKeys && skipKeys.has(key))) continue;
 
         let displayVal = value;
 
