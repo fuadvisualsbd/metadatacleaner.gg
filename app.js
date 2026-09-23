@@ -2100,7 +2100,7 @@ function renderFileItem(fileObj) {
     li.innerHTML = `
         ${previewHtml}
         <div class="file-info">
-            <div class="file-name" title="${fileObj.name}">${fileObj.name}</div>
+            <div class="file-name" title="${escapeHtml(fileObj.name)}">${escapeHtml(fileObj.name)}</div>
             <div class="file-meta">
                 <span>${categoryBadge}${formatBytes(fileObj.size)}</span>
                 ${statusBadge}
@@ -2127,6 +2127,7 @@ function selectFile(id) {
     if (!fileObj) return;
 
     selectedFileName.textContent = fileObj.name;
+    selectedFileName.title = fileObj.name;
     renderMetadataInspector(fileObj);
 }
 
