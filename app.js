@@ -1683,6 +1683,8 @@ function cleanSvgFile(svgText, mode) {
         if (mode === 'ALL') {
             cleanSvg = cleanSvg.replace(/<!--[\s\S]*?-->/g, '');
             cleanSvg = cleanSvg.replace(/<x:xmpmeta[\s\S]*?<\/x:xmpmeta>/gi, '');
+        } else if (mode === 'STOCK') {
+            cleanSvg = cleanXmpStringPreservingStock(cleanSvg);
         }
 
         return cleanSvg;
@@ -1894,15 +1896,18 @@ function cleanEpsBuffer(arrayBuffer, mode) {
                 break;
             }
 
-            for (const prefix of targetPrefixes) {
-                if (lineStr.startsWith(prefix)) {
-                    // Replace the entire line (or keep '%%Comment:' with spaces) so it becomes a harmless blank comment '%   ...'
-                    // Keeping '%' at byte 0 and filling the rest of the line with spaces (0x20) is 100% valid PostScript comment syntax
-                    // and preserves the exact byte length of the header!
-                    for (let k = pos + 1; k < lineEnd; k++) {
-                        output[k] = 0x20; // ASCII space
+            if (lineStr.toLowerCase().includes('topaz') || lineStr.toLowerCase().includes('gigapixel')) {
+                for (let k = pos + 1; k < lineEnd; k++) {
+                    output[k] = 0x20;
+                }
+            } else {
+                for (const prefix of targetPrefixes) {
+                    if (lineStr.startsWith(prefix)) {
+                        for (let k = pos + 1; k < lineEnd; k++) {
+                            output[k] = 0x20; // ASCII space
+                        }
+                        break;
                     }
-                    break;
                 }
             }
         }
