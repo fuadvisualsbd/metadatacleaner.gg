@@ -18,7 +18,6 @@ const btnDownloadAll = document.getElementById('btn-download-all');
 
 // Quick Action Buttons
 const btnClearAll = document.getElementById('btn-clear-all');
-const btnClearPrivate = document.getElementById('btn-clear-private');
 const btnKeepStock = document.getElementById('btn-keep-stock');
 
 // Secret Code Elements
@@ -114,7 +113,6 @@ function init() {
 
     // Actions
     attachButtonAction(btnClearAll, 'ALL');
-    attachButtonAction(btnClearPrivate, 'PRIVATE');
     attachButtonAction(btnKeepStock, 'STOCK');
     
     // Secret Code Logic
@@ -760,6 +758,114 @@ function stripJpegC2pa(arrayBuffer) {
     return output.buffer;
 }
 
+// Stock Safe JPEG cleaner:
+// Keeps APP1 (XMP) and APP13 (Photoshop IPTC containing title, keywords, copyright)
+// Strips APP11 (C2PA) and removes GPS / camera private tags from EXIF APP1
+function stripJpegForStockSafe(arrayBuffer) {
+    const uint8 = new Uint8Array(arrayBuffer);
+    if (uint8[0] !== 0xFF || uint8[1] !== 0xD8) return arrayBuffer;
+
+    const chunks = [];
+    chunks.push({ start: 0, end: 2 }); // SOI
+
+    let offset = 2;
+    while (offset < uint8.length - 4) {
+        if (uint8[offset] !== 0xFF) {
+            chunks.push({ start: offset, end: offset + 1 });
+            offset++;
+            continue;
+        }
+        let markerStart = offset;
+        while (offset < uint8.length && uint8[offset] === 0xFF) offset++;
+        if (offset >= uint8.length) break;
+
+        const marker = uint8[offset++];
+        if (marker === 0xDA) { // SOS
+            chunks.push({ start: markerStart, end: uint8.length });
+            break;
+        }
+        if (marker === 0xD9) { // EOI
+            chunks.push({ start: markerStart, end: offset });
+            break;
+        }
+        if (marker === 0x00 || (marker >= 0xD0 && marker <= 0xD7)) {
+            chunks.push({ start: markerStart, end: offset });
+            continue;
+        }
+
+        if (offset + 2 > uint8.length) {
+            chunks.push({ start: markerStart, end: uint8.length });
+            break;
+        }
+
+        const len = (uint8[offset] << 8) | uint8[offset + 1];
+        const segEnd = offset + len;
+
+        // Skip C2PA APP11 markers
+        if (marker === 0xEB && isJumbfData(uint8, offset + 2, len - 2)) {
+            offset = segEnd;
+            continue;
+        }
+
+        // Handle APP1 (Exif vs XMP)
+        if (marker === 0xE1) {
+            const segDataOffset = offset + 2;
+            const headerStr = String.fromCharCode.apply(null, uint8.subarray(segDataOffset, Math.min(segDataOffset + 28, segEnd)));
+            
+            if (headerStr.startsWith('Exif\0\0')) {
+                // EXIF APP1: Safely strip GPS and sensitive camera tags, keep stock/copyright tags
+                try {
+                    const exifStr = uint8ToBinaryString(uint8, markerStart, segEnd);
+                    const exifObj = piexif.load(exifStr);
+                    // Remove GPS
+                    if (exifObj.GPS) exifObj.GPS = {};
+                    // Remove MakerNote, DeviceSetting, and private serials
+                    if (exifObj.Exif) {
+                        delete exifObj.Exif[piexif.ExifIFD.MakerNote];
+                        delete exifObj.Exif[piexif.ExifIFD.DeviceSettingDescription];
+                        delete exifObj.Exif[piexif.ExifIFD.BodySerialNumber];
+                        delete exifObj.Exif[piexif.ExifIFD.LensSerialNumber];
+                    }
+                    const newExifDump = piexif.dump(exifObj);
+                    const newExifBytes = new Uint8Array(newExifDump.length);
+                    for (let b = 0; b < newExifDump.length; b++) {
+                        newExifBytes[b] = newExifDump.charCodeAt(b) & 0xFF;
+                    }
+                    chunks.push({ customBytes: newExifBytes });
+                    offset = segEnd;
+                    continue;
+                } catch (e) {
+                    // If parsing failed, keep chunk as fallback
+                }
+            }
+            // If XMP APP1 (http://ns.adobe.com/xap/1.0/): keep it intact for Title & Keywords!
+        }
+
+        // Keep APP13 (IPTC), APP1 (XMP), and all other image segments
+        chunks.push({ start: markerStart, end: segEnd });
+        offset = segEnd;
+    }
+
+    let totalLen = 0;
+    for (const c of chunks) {
+        totalLen += c.customBytes ? c.customBytes.length : (c.end - c.start);
+    }
+    const output = new Uint8Array(totalLen);
+    let writePos = 0;
+    for (const chunk of chunks) {
+        if (chunk.customBytes) {
+            output.set(chunk.customBytes, writePos);
+            writePos += chunk.customBytes.length;
+        } else {
+            const slice = uint8.slice(chunk.start, chunk.end);
+            output.set(slice, writePos);
+            writePos += slice.length;
+        }
+    }
+
+    return output.buffer;
+}
+
 // Strip caBX chunk from PNG ArrayBuffer
 function stripPngC2pa(arrayBuffer) {
     const uint8 = new Uint8Array(arrayBuffer);
@@ -1316,16 +1422,18 @@ function cleanSvgFile(svgText, mode) {
         const doc = parser.parseFromString(svgText, 'image/svg+xml');
         const svg = doc.documentElement;
 
-        if (mode === 'ALL' || mode === 'PRIVATE') {
+        if (mode === 'ALL') {
             // Remove <metadata> elements
             const metaEls = doc.getElementsByTagName('metadata');
             while (metaEls.length > 0) metaEls[0].parentNode.removeChild(metaEls[0]);
 
-            // Remove <desc> elements
+            // Remove <desc> and <title> elements
             const descEls = doc.getElementsByTagName('desc');
             while (descEls.length > 0) descEls[0].parentNode.removeChild(descEls[0]);
+            const titleEls = doc.getElementsByTagName('title');
+            while (titleEls.length > 0) titleEls[0].parentNode.removeChild(titleEls[0]);
 
-            // Remove Inkscape/Sodipodi namespace attributes from root
+            // Remove all namespaced editor attributes & elements
             const attrsToRemove = [];
             for (const attr of svg.attributes) {
                 if (attr.name.startsWith('inkscape:') || attr.name.startsWith('sodipodi:') ||
@@ -1336,7 +1444,6 @@ function cleanSvgFile(svgText, mode) {
             }
             for (const name of attrsToRemove) svg.removeAttribute(name);
 
-            // Remove Inkscape/Sodipodi elements
             const removeTagPrefixes = ['inkscape:', 'sodipodi:', 'sketch:'];
             const allEls = Array.from(doc.getElementsByTagName('*'));
             for (const el of allEls) {
@@ -1345,7 +1452,6 @@ function cleanSvgFile(svgText, mode) {
                     el.parentNode.removeChild(el);
                     continue;
                 }
-                // Remove namespaced attributes from all elements
                 const elAttrsToRemove = [];
                 for (const attr of el.attributes) {
                     if (attr.name.startsWith('inkscape:') || attr.name.startsWith('sodipodi:') ||
@@ -1356,16 +1462,40 @@ function cleanSvgFile(svgText, mode) {
                 for (const name of elAttrsToRemove) el.removeAttribute(name);
             }
 
-            // Remove RDF namespace
+            // Remove RDF namespace in ALL mode
             svg.removeAttribute('xmlns:rdf');
             svg.removeAttribute('xmlns:dc');
             svg.removeAttribute('xmlns:cc');
-        }
+        } else if (mode === 'STOCK') {
+            // STOCK SAFE: Remove only private/editor namespaces (Inkscape/Sodipodi/Sketch),
+            // but KEEP <title>, <desc>, and Dublin Core stock tags
+            const attrsToRemove = [];
+            for (const attr of svg.attributes) {
+                if (attr.name.startsWith('inkscape:') || attr.name.startsWith('sodipodi:') ||
+                    attr.name.startsWith('xmlns:inkscape') || attr.name.startsWith('xmlns:sodipodi') ||
+                    attr.name.startsWith('xmlns:sketch') || attr.name.startsWith('sketch:')) {
+                    attrsToRemove.push(attr.name);
+                }
+            }
+            for (const name of attrsToRemove) svg.removeAttribute(name);
 
-        if (mode === 'ALL') {
-            // Also remove <title> and comments
-            const titleEls = doc.getElementsByTagName('title');
-            while (titleEls.length > 0) titleEls[0].parentNode.removeChild(titleEls[0]);
+            const removeTagPrefixes = ['inkscape:', 'sodipodi:', 'sketch:'];
+            const allEls = Array.from(doc.getElementsByTagName('*'));
+            for (const el of allEls) {
+                const tag = el.tagName || '';
+                if (removeTagPrefixes.some(p => tag.startsWith(p))) {
+                    el.parentNode.removeChild(el);
+                    continue;
+                }
+                const elAttrsToRemove = [];
+                for (const attr of el.attributes) {
+                    if (attr.name.startsWith('inkscape:') || attr.name.startsWith('sodipodi:') ||
+                        attr.name.startsWith('sketch:')) {
+                        elAttrsToRemove.push(attr.name);
+                    }
+                }
+                for (const name of elAttrsToRemove) el.removeAttribute(name);
+            }
         }
 
         // Serialize back
@@ -1375,10 +1505,6 @@ function cleanSvgFile(svgText, mode) {
         // Remove XML comments if mode is ALL
         if (mode === 'ALL') {
             cleanSvg = cleanSvg.replace(/<!--[\s\S]*?-->/g, '');
-        }
-
-        // Remove embedded XMP blocks
-        if (mode === 'ALL' || mode === 'PRIVATE') {
             cleanSvg = cleanSvg.replace(/<x:xmpmeta[\s\S]*?<\/x:xmpmeta>/gi, '');
         }
 
@@ -1612,11 +1738,9 @@ function cleanEpsBuffer(arrayBuffer, mode) {
     }
 
     // 2. Clean Embedded XMP Metadata Packet In-Place (Byte-Length Preserving)
-    // EPS & AI files often have multiple XMP packets (PostScript XMP stream + PDF XMP stream).
-    // If you delete the <x:xmpmeta> bytes, PostScript stream byte-counts and PDF xref tables break!
-    // Instead, we replace the contents inside <x:xmpmeta>...</x:xmpmeta> with a minimal valid empty XMP skeleton
-    // padded with spaces to the EXACT original byte length.
-    if (mode === 'ALL' || mode === 'PRIVATE') {
+    // In 'ALL' mode: replace XMP contents with minimal empty XMP skeleton padded with spaces
+    // In 'STOCK' mode: KEEP embedded XMP packet intact so Title, Keywords, and Stock Tags are preserved
+    if (mode === 'ALL') {
         const openTag = '<x:xmpmeta';
         const closeTag = '</x:xmpmeta>';
         const minimalXmp = '<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"/></x:xmpmeta>';
@@ -1906,17 +2030,29 @@ async function processImage(fileObj, mode) {
 
     if (mode === 'ALL') {
         finalDataURL = await cleanViaCanvas(fileObj);
-    } else if (mode === 'PRIVATE' || mode === 'STOCK') {
+    } else if (mode === 'STOCK') {
         if (fileObj.type === 'image/jpeg') {
             try {
-                let cleanExifDataURL = fileObj.previewURL;
-                try { cleanExifDataURL = piexif.remove(fileObj.previewURL); } catch (ex) {}
-
-                // Strip APP11 C2PA markers from JPEG bytes
-                const intermediateBlob = dataURLtoBlob(cleanExifDataURL);
-                const interBuf = await intermediateBlob.arrayBuffer();
-                const strippedBuf = stripJpegC2pa(interBuf);
+                // In Stock Safe mode: strip GPS/camera private data & C2PA, but KEEP Title/Keywords/IPTC/XMP
+                const strippedBuf = stripJpegForStockSafe(fileObj.originalArrayBuffer);
                 return new Blob([strippedBuf], { type: 'image/jpeg' });
+            } catch (e) {
+                console.error("Stock Safe JPEG processing error:", e);
+                finalDataURL = await cleanViaCanvas(fileObj);
+            }
+        } else if (fileObj.type === 'image/png') {
+            // PNG Stock Safe: strip C2PA chunk, preserve text chunks
+            try {
+                const strippedBuf = stripPngC2pa(fileObj.originalArrayBuffer);
+                return new Blob([strippedBuf], { type: 'image/png' });
+            } catch (e) {
+                finalDataURL = await cleanViaCanvas(fileObj);
+            }
+        } else if (fileObj.type === 'image/webp') {
+            // WebP Stock Safe: strip C2PA chunk, keep EXIF/XMP
+            try {
+                const strippedBuf = stripWebpC2pa(fileObj.originalArrayBuffer);
+                return new Blob([strippedBuf], { type: 'image/webp' });
             } catch (e) {
                 finalDataURL = await cleanViaCanvas(fileObj);
             }
