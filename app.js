@@ -758,9 +758,61 @@ function stripJpegC2pa(arrayBuffer) {
     return output.buffer;
 }
 
+// Helper: Clean XMP string in-place or via XML to remove software/creatorTool/topaz references while preserving title, keywords, copyright
+function cleanXmpStringPreservingStock(xmpStr) {
+    if (!xmpStr) return xmpStr;
+
+    // Remove standalone Software/CreatorTool attributes from rdf:Description
+    let cleaned = xmpStr.replace(/\s+(?:xmp:CreatorTool|tiff:Software|photoshop:SoftwareAgent|xmpMM:SoftwareAgent|stEvt:softwareAgent)="[^"]*"/gi, '');
+    cleaned = cleaned.replace(/\s+(?:xmp:CreatorTool|tiff:Software|photoshop:SoftwareAgent|xmpMM:SoftwareAgent|stEvt:softwareAgent)='[^']*'/gi, '');
+
+    // Remove element-based CreatorTool and Software tags
+    cleaned = cleaned.replace(/<(?:xmp:CreatorTool|tiff:Software|photoshop:SoftwareAgent)[\s\S]*?<\/(?:xmp:CreatorTool|tiff:Software|photoshop:SoftwareAgent)>/gi, '');
+    cleaned = cleaned.replace(/<(?:xmp:CreatorTool|tiff:Software|photoshop:SoftwareAgent)[^>]*\/>/gi, '');
+
+    // Remove Topaz specific tags / namespaces if present
+    cleaned = cleaned.replace(/<topaz:[^>]*>[\s\S]*?<\/topaz:[^>]*>/gi, '');
+    cleaned = cleaned.replace(/<topaz:[^>]*\/>/gi, '');
+
+    // Blank out any remaining mentions of Topaz, Gigapixel, or AI upscalers inside history/comments
+    cleaned = cleaned.replace(/Topaz\s+Gigapixel[^\r\n<"]*/gi, '');
+    cleaned = cleaned.replace(/Topaz\s+Photo[^\r\n<"]*/gi, '');
+
+    return cleaned;
+}
+
+// Clean JPEG XMP APP1 segment bytes while preserving exact byte length
+function cleanXmpSegmentBytesPreservingStock(segBytes) {
+    // segBytes includes: [0xFF, 0xE1, len_hi, len_lo, ...payload...]
+    const segLen = segBytes.length;
+    const headerPrefix = 'http://ns.adobe.com/xap/1.0/\0';
+    const headerLen = 4 + headerPrefix.length; // marker(2) + len(2) + headerPrefix
+    if (segLen <= headerLen) return segBytes;
+
+    const xmlBytes = segBytes.subarray(headerLen);
+    const decoder = new TextDecoder('utf-8', { fatal: false });
+    const xmlStr = decoder.decode(xmlBytes);
+
+    const cleanedXmlStr = cleanXmpStringPreservingStock(xmlStr);
+    const encodedCleaned = new TextEncoder().encode(cleanedXmlStr);
+
+    if (encodedCleaned.length <= xmlBytes.length) {
+        // Pad the remainder with spaces (0x20) so the segment length stays 100% identical!
+        const result = new Uint8Array(segBytes);
+        result.set(encodedCleaned, headerLen);
+        for (let i = headerLen + encodedCleaned.length; i < segLen; i++) {
+            result[i] = 0x20; // ASCII space padding
+        }
+        return result;
+    }
+
+    // Fallback: return original if encoded length exceeded
+    return segBytes;
+}
+
 // Stock Safe JPEG cleaner:
 // Keeps APP1 (XMP) and APP13 (Photoshop IPTC containing title, keywords, copyright)
-// Strips APP11 (C2PA) and removes GPS / camera private tags from EXIF APP1
+// Strips APP11 (C2PA) and removes GPS / camera private tags and Software/CreatorTool from EXIF and XMP
 function stripJpegForStockSafe(arrayBuffer) {
     const uint8 = new Uint8Array(arrayBuffer);
     if (uint8[0] !== 0xFF || uint8[1] !== 0xD8) return arrayBuffer;
@@ -813,10 +865,16 @@ function stripJpegForStockSafe(arrayBuffer) {
             const headerStr = String.fromCharCode.apply(null, uint8.subarray(segDataOffset, Math.min(segDataOffset + 28, segEnd)));
             
             if (headerStr.startsWith('Exif\0\0')) {
-                // EXIF APP1: Safely strip GPS and sensitive camera tags, keep stock/copyright tags
+                // EXIF APP1: Safely strip Software, CreatorTool, GPS, and sensitive camera tags
                 try {
                     const exifStr = uint8ToBinaryString(uint8, markerStart, segEnd);
                     const exifObj = piexif.load(exifStr);
+                    // Remove Software & HostComputer in 0th IFD (e.g. Topaz Gigapixel AI)
+                    if (exifObj["0th"]) {
+                        delete exifObj["0th"][piexif.ImageIFD.Software];
+                        delete exifObj["0th"][piexif.ImageIFD.HostComputer];
+                        delete exifObj["0th"][piexif.ImageIFD.ProcessingSoftware];
+                    }
                     // Remove GPS
                     if (exifObj.GPS) exifObj.GPS = {};
                     // Remove MakerNote, DeviceSetting, and private serials
@@ -825,6 +883,7 @@ function stripJpegForStockSafe(arrayBuffer) {
                         delete exifObj.Exif[piexif.ExifIFD.DeviceSettingDescription];
                         delete exifObj.Exif[piexif.ExifIFD.BodySerialNumber];
                         delete exifObj.Exif[piexif.ExifIFD.LensSerialNumber];
+                        delete exifObj.Exif[piexif.ExifIFD.CameraOwnerName];
                     }
                     const newExifDump = piexif.dump(exifObj);
                     const newExifBytes = new Uint8Array(newExifDump.length);
@@ -837,8 +896,18 @@ function stripJpegForStockSafe(arrayBuffer) {
                 } catch (e) {
                     // If parsing failed, keep chunk as fallback
                 }
+            } else if (headerStr.startsWith('http://ns.adobe.com/xap/1.0/\0')) {
+                // XMP APP1: Keep Title, Keywords, Description & Copyright, but strip CreatorTool, Software, Topaz info
+                try {
+                    const segBytes = uint8.slice(markerStart, segEnd);
+                    const cleanedSegBytes = cleanXmpSegmentBytesPreservingStock(segBytes);
+                    chunks.push({ customBytes: cleanedSegBytes });
+                    offset = segEnd;
+                    continue;
+                } catch (e) {
+                    // fallback
+                }
             }
-            // If XMP APP1 (http://ns.adobe.com/xap/1.0/): keep it intact for Title & Keywords!
         }
 
         // Keep APP13 (IPTC), APP1 (XMP), and all other image segments
@@ -886,11 +955,56 @@ function stripPngC2pa(arrayBuffer) {
             continue;
         }
 
+        // Filter Software / Topaz / Creator metadata from tEXt or zTXt chunks
+        if (type === 'tEXt' || type === 'zTXt') {
+            const chunkData = uint8.subarray(offset + 8, chunkEnd - 4);
+            const nullIdx = chunkData.indexOf(0);
+            if (nullIdx !== -1) {
+                const keyword = new TextDecoder('latin1').decode(chunkData.subarray(0, nullIdx));
+                if (['Software', 'Creator', 'Comment', 'Source'].includes(keyword)) {
+                    offset = chunkEnd;
+                    continue;
+                }
+            }
+        }
+
         if (type === 'iTXt' && len > 4) {
-            const keyword = new TextDecoder('latin1').decode(uint8.slice(offset + 8, Math.min(offset + 8 + 32, chunkEnd)));
-            if (keyword.startsWith('c2pa') || keyword.startsWith('caBX')) {
+            const chunkData = uint8.subarray(offset + 8, chunkEnd - 4);
+            const nullIdx = chunkData.indexOf(0);
+            const keyword = nullIdx !== -1 ? new TextDecoder('latin1').decode(chunkData.subarray(0, nullIdx)) : '';
+            if (keyword.startsWith('c2pa') || keyword.startsWith('caBX') || keyword === 'Software') {
                 offset = chunkEnd;
                 continue;
+            }
+            // If iTXt contains XMP (keyword XML:com.adobe.xmp), clean Software/CreatorTool from XMP
+            if (keyword === 'XML:com.adobe.xmp') {
+                try {
+                    let pos = nullIdx + 1;
+                    const isCompressed = chunkData[pos] === 1;
+                    if (!isCompressed) {
+                        pos += 2;
+                        while (pos < chunkData.length && chunkData[pos] !== 0) pos++; // skip lang tag
+                        pos++;
+                        while (pos < chunkData.length && chunkData[pos] !== 0) pos++; // skip trans keyword
+                        pos++;
+                        const xmpRaw = new TextDecoder('utf-8', { fatal: false }).decode(chunkData.subarray(pos));
+                        const cleanedXmp = cleanXmpStringPreservingStock(xmpRaw);
+                        const encodedCleaned = new TextEncoder().encode(cleanedXmp);
+                        if (encodedCleaned.length <= (chunkData.length - pos)) {
+                            // Pad remainder with spaces
+                            chunkData.set(encodedCleaned, pos);
+                            for (let p = pos + encodedCleaned.length; p < chunkData.length; p++) {
+                                chunkData[p] = 0x20;
+                            }
+                            // Recalculate CRC32
+                            const crc = crc32(uint8.subarray(offset + 4, chunkEnd - 4));
+                            uint8[chunkEnd - 4] = (crc >> 24) & 0xff;
+                            uint8[chunkEnd - 3] = (crc >> 16) & 0xff;
+                            uint8[chunkEnd - 2] = (crc >> 8) & 0xff;
+                            uint8[chunkEnd - 1] = crc & 0xff;
+                        }
+                    }
+                } catch (e) { /* ignore */ }
             }
         }
 
@@ -1783,6 +1897,32 @@ function cleanEpsBuffer(arrayBuffer, mode) {
 
             searchFrom = xmpEnd;
         }
+    } else if (mode === 'STOCK') {
+        // STOCK SAFE: Preserve stock Title/Keywords/Copyright in XMP, but remove CreatorTool and Topaz references
+        const openTag = '<x:xmpmeta';
+        const closeTag = '</x:xmpmeta>';
+        let searchFrom = 0;
+        while (searchFrom < output.length) {
+            const xmpStart = indexOfAsciiBytes(output, openTag, searchFrom, output.length);
+            if (xmpStart === -1) break;
+            const closePos = indexOfAsciiBytes(output, closeTag, xmpStart, output.length);
+            if (closePos === -1) break;
+
+            const xmpEnd = closePos + closeTag.length;
+            const totalXmpLen = xmpEnd - xmpStart;
+
+            try {
+                const rawXmp = uint8ToBinaryString(output, xmpStart, xmpEnd);
+                const cleanedXmp = cleanXmpStringPreservingStock(rawXmp);
+                const encoded = new TextEncoder().encode(cleanedXmp);
+                if (encoded.length <= totalXmpLen) {
+                    for (let i = xmpStart; i < xmpEnd; i++) output[i] = 0x20;
+                    output.set(encoded, xmpStart);
+                }
+            } catch (e) { /* ignore */ }
+
+            searchFrom = xmpEnd;
+        }
     }
 
     return output.buffer;
@@ -1850,21 +1990,36 @@ function cleanMp4File(arrayBuffer, mode) {
                 isC2paUuidBox = match;
             }
 
-            // Decide whether to skip this atom
             const isC2paAtom = (type === 'c2pa' || isC2paUuidBox);
-            const isMetaAtom = (type === 'udta' || (type === 'meta' && parentType === 'moov') || isC2paAtom);
 
-            if ((mode === 'ALL' || isC2paAtom) && isMetaAtom) {
-                // Skip entire udta/meta/c2pa atoms (removes all metadata and C2PA)
-                offset = atomEnd;
-                continue;
+            if (mode === 'ALL') {
+                const isMetaAtom = (type === 'udta' || (type === 'meta' && parentType === 'moov') || isC2paAtom);
+                if (isMetaAtom) {
+                    offset = atomEnd;
+                    continue;
+                }
+            } else if (mode === 'STOCK') {
+                // In Stock Safe:
+                // 1. Always strip C2PA
+                if (isC2paAtom) {
+                    offset = atomEnd;
+                    continue;
+                }
+                // 2. Strip encoder/software tags (©too), GPS (©xyz, loci), and authoring tool atoms
+                if (type === '\xA9too' || type === '\xA9xyz' || type === 'loci') {
+                    offset = atomEnd;
+                    continue;
+                }
             }
 
             // Container atoms: recurse to selectively clean children
-            if (['moov', 'trak', 'mdia', 'minf', 'stbl'].includes(type)) {
-                // Write atom header
-                chunks.push({ start: offset, end: offset + 8 });
-                collectAtoms(offset + 8, atomEnd, depth + 1, type);
+            if (['moov', 'trak', 'mdia', 'minf', 'stbl', 'udta', 'meta', 'ilst'].includes(type)) {
+                let headerSize = 8;
+                if (type === 'meta' && size > 12) {
+                    headerSize = 12; // meta atom has 4 bytes version/flags
+                }
+                chunks.push({ start: offset, end: offset + headerSize });
+                collectAtoms(offset + headerSize, atomEnd, depth + 1, type);
                 offset = atomEnd;
                 continue;
             }
@@ -1896,7 +2051,7 @@ function cleanMp4File(arrayBuffer, mode) {
 
 function fixMp4ContainerSizes(bytes) {
     const view = new DataView(bytes.buffer);
-    const containerTypes = new Set(['moov', 'trak', 'mdia', 'minf', 'stbl']);
+    const containerTypes = new Set(['moov', 'trak', 'mdia', 'minf', 'stbl', 'udta', 'meta', 'ilst']);
 
     function fixAtoms(start, end) {
         let offset = start;
@@ -1949,9 +2104,23 @@ function cleanGenericVideoXmp(arrayBuffer, mode) {
     if (xmpEnd === -1) return arrayBuffer;
 
     const output = new Uint8Array(arrayBuffer.slice(0));
-    const space = 0x20;
-    for (let i = xmpStart; i < xmpEnd + 12 && i < output.length; i++) {
-        output[i] = space;
+
+    if (mode === 'ALL') {
+        const space = 0x20;
+        for (let i = xmpStart; i < xmpEnd + 12 && i < output.length; i++) {
+            output[i] = space;
+        }
+    } else if (mode === 'STOCK') {
+        const xmpBlock = fullStr.substring(xmpStart, xmpEnd + 12);
+        const cleanedXmp = cleanXmpStringPreservingStock(xmpBlock);
+        const encodedCleaned = new TextEncoder().encode(cleanedXmp);
+        const origLen = (xmpEnd + 12) - xmpStart;
+        if (encodedCleaned.length <= origLen) {
+            output.set(encodedCleaned, xmpStart);
+            for (let i = xmpStart + encodedCleaned.length; i < xmpEnd + 12 && i < output.length; i++) {
+                output[i] = 0x20;
+            }
+        }
     }
 
     return output.buffer;
