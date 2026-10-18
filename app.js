@@ -169,10 +169,9 @@ async function handleFiles(files) {
                 previewURL = await readFileAsDataURL(file); // SVGs render as <img>
                 metadata = extractSvgMetadata(text);
             } else {
-                // EPS / AI
+                // EPS / AI — extract metadata safely from header & XMP bytes without corrupting binary data
                 previewURL = null; // Can't preview PostScript in browser
-                const text = new TextDecoder('latin1').decode(arrayBuffer);
-                metadata = extractEpsMetadata(text, arrayBuffer);
+                metadata = extractEpsMetadata(arrayBuffer);
             }
         }
 
@@ -1391,47 +1390,101 @@ function cleanSvgFile(svgText, mode) {
 }
 
 // ============================================================
-// VECTOR METADATA ENGINE — EPS / AI
+// VECTOR METADATA ENGINE — EPS / AI (100% Byte-Safe & Non-Destructive)
 // ============================================================
 
-function extractEpsMetadata(text, arrayBuffer) {
-    const metadata = {};
+// Helper: Decode a Uint8Array slice as true 1:1 ISO-8859-1 (unlike TextDecoder('latin1') which uses Windows-1252)
+function uint8ToBinaryString(uint8, start = 0, end = uint8.length) {
+    const limit = Math.min(end, uint8.length);
+    let str = '';
+    const chunkSize = 8192;
+    for (let i = start; i < limit; i += chunkSize) {
+        const sub = uint8.subarray(i, Math.min(i + chunkSize, limit));
+        str += String.fromCharCode.apply(null, sub);
+    }
+    return str;
+}
 
-    // 1. DSC (Document Structuring Convention) comments
+// Helper: Check if EPS file has a 30-byte DOS EPS Binary Header (0xC5 0xD0 0xD3 0xC6)
+function getDosEpsHeader(uint8) {
+    if (uint8.length >= 30 &&
+        uint8[0] === 0xC5 && uint8[1] === 0xD0 &&
+        uint8[2] === 0xD3 && uint8[3] === 0xC6) {
+        const view = new DataView(uint8.buffer, uint8.byteOffset, uint8.byteLength);
+        const psOffset = view.getUint32(4, true);
+        const psLength = view.getUint32(8, true);
+        const wmfOffset = view.getUint32(12, true);
+        const wmfLength = view.getUint32(16, true);
+        const tiffOffset = view.getUint32(20, true);
+        const tiffLength = view.getUint32(24, true);
+        return { isDosEps: true, psOffset, psLength, wmfOffset, wmfLength, tiffOffset, tiffLength };
+    }
+    return { isDosEps: false, psOffset: 0, psLength: uint8.length };
+}
+
+function extractEpsMetadata(arrayBuffer) {
+    const metadata = {};
+    if (!arrayBuffer || arrayBuffer.byteLength < 8) return metadata;
+
+    const uint8 = new Uint8Array(arrayBuffer);
+    const dosInfo = getDosEpsHeader(uint8);
+
+    // Read up to 64 KB from the start of the PostScript/PDF header for DSC inspection
+    const headerStart = (dosInfo.isDosEps && dosInfo.psOffset < uint8.length) ? dosInfo.psOffset : 0;
+    const headerLen = Math.min(uint8.length - headerStart, 65536);
+    const headerText = uint8ToBinaryString(uint8, headerStart, headerStart + headerLen);
+
+    // 1. Detect Format (DOS EPS, Standard EPS, or PDF-based AI)
+    if (dosInfo.isDosEps) {
+        metadata['Container'] = 'DOS EPS Binary Header (TIFF/WMF Preview)';
+    }
+    if (headerText.startsWith('%PDF-')) {
+        const pdfVer = headerText.match(/^%PDF-[\d.]+/);
+        metadata['Format'] = pdfVer ? `Adobe Illustrator PDF (${pdfVer[0]})` : 'PDF-Based Vector';
+    } else if (headerText.includes('%!PS-Adobe')) {
+        const epsMatch = headerText.match(/^(%!PS-Adobe-[\d.]+ EPSF-[\d.]+)/m);
+        const psMatch = headerText.match(/^(%!PS-Adobe-[\d.]+)/m);
+        metadata['Format'] = epsMatch ? epsMatch[1].trim() : (psMatch ? psMatch[1].trim() : 'PostScript / EPS');
+    }
+
+    // 2. DSC (Document Structuring Convention) comments
     const dscPatterns = [
         { regex: /^%%Creator:\s*(.+)$/m, key: 'Creator' },
         { regex: /^%%Title:\s*(.+)$/m, key: 'Title' },
         { regex: /^%%CreationDate:\s*(.+)$/m, key: 'Creation Date' },
         { regex: /^%%For:\s*(.+)$/m, key: 'For (Author)' },
+        { regex: /^%%Routing:\s*(.+)$/m, key: 'Routing' },
+        { regex: /^%%Copyright:\s*(.+)$/m, key: 'Copyright' },
         { regex: /^%%DocumentData:\s*(.+)$/m, key: 'Document Data' },
         { regex: /^%%LanguageLevel:\s*(.+)$/m, key: 'Language Level' },
         { regex: /^%%BoundingBox:\s*(.+)$/m, key: 'Bounding Box' },
         { regex: /^%%HiResBoundingBox:\s*(.+)$/m, key: 'HiRes Bounding Box' },
         { regex: /^%%Pages:\s*(.+)$/m, key: 'Pages' },
         { regex: /^%%DocumentProcessColors:\s*(.+)$/m, key: 'Process Colors' },
-        { regex: /^%%DocumentNeededResources:\s*(.+)$/m, key: 'Needed Resources' },
-        { regex: /^%AI\d+_(.+?):\s*(.+)$/m, key: 'AI Setting' },
     ];
 
     for (const { regex, key } of dscPatterns) {
-        const match = text.match(regex);
+        const match = headerText.match(regex);
         if (match) {
-            metadata[key] = match[1].trim();
+            const val = match[1].trim();
+            if (val && !/^\s*\(\s*\)\s*$/.test(val)) {
+                metadata[key] = val;
+            }
         }
     }
 
-    // 2. AI-specific metadata
+    // 3. AI-specific structural info (read-only informational)
     const aiPatterns = [
-        { regex: /%AI\d+_ColorModel:\s*(\d+)/m, key: 'AI Color Model' },
-        { regex: /%AI\d+_TargetResolution:\s*(\d+)/m, key: 'AI Target Resolution' },
-        { regex: /%AI\d+_NumLayers:\s*(\d+)/m, key: 'AI Num Layers' },
+        { regex: /^%AI\d+_ColorModel:\s*(\d+)/m, key: 'AI Color Model' },
+        { regex: /^%AI\d+_TargetResolution:\s*(\d+)/m, key: 'AI Target Resolution' },
+        { regex: /^%AI\d+_NumLayers:\s*(\d+)/m, key: 'AI Num Layers' },
     ];
     for (const { regex, key } of aiPatterns) {
-        const match = text.match(regex);
+        const match = headerText.match(regex);
         if (match) metadata[key] = match[1].trim();
     }
 
-    // 3. XMP block in EPS/AI
+    // 4. XMP block in EPS/AI
     try {
         const xmpParsed = extractXmpFromBytes(arrayBuffer);
         if (xmpParsed && Object.keys(xmpParsed).length > 0) {
@@ -1443,56 +1496,172 @@ function extractEpsMetadata(text, arrayBuffer) {
         console.error("EPS/AI XMP scan error:", e);
     }
 
-    // 4. Detect the format
-    if (text.startsWith('%!PS-Adobe')) {
-        const epsMatch = text.match(/^(%!PS-Adobe-[\d.]+ EPSF-[\d.]+)/m);
-        const psMatch = text.match(/^(%!PS-Adobe-[\d.]+)/m);
-        metadata['Format'] = epsMatch ? epsMatch[1] : (psMatch ? psMatch[1] : 'PostScript');
-    }
-
     return metadata;
 }
 
-function cleanEpsFile(text, arrayBuffer, mode) {
-    let cleanText = text;
+// Helper: Find ASCII byte pattern inside Uint8Array
+function indexOfAsciiBytes(uint8, patternStr, fromIndex = 0, maxIndex = uint8.length) {
+    const patLen = patternStr.length;
+    const limit = Math.min(maxIndex, uint8.length) - patLen;
+    if (patLen === 0 || limit < fromIndex) return -1;
+    const firstByte = patternStr.charCodeAt(0);
 
-    if (mode === 'ALL') {
-        // Remove all DSC metadata comments (keep structural ones)
-        const metaDscPatterns = [
-            /^%%Creator:.*$/gm,
-            /^%%Title:.*$/gm,
-            /^%%CreationDate:.*$/gm,
-            /^%%For:.*$/gm,
-            /^%%Copyright:.*$/gm,
-            /^%AI\d+_.*$/gm,
-        ];
-        for (const pat of metaDscPatterns) {
-            cleanText = cleanText.replace(pat, '');
+    for (let i = fromIndex; i <= limit; i++) {
+        if (uint8[i] !== firstByte) continue;
+        let matched = true;
+        for (let j = 1; j < patLen; j++) {
+            if (uint8[i + j] !== patternStr.charCodeAt(j)) {
+                matched = false;
+                break;
+            }
         }
+        if (matched) return i;
+    }
+    return -1;
+}
+
+// Byte-Safe In-Place EPS / AI Cleaner
+// Guarantees 0% file corruption:
+// - Never converts binary data via TextDecoder('latin1')
+// - Never changes file byte length or shifts byte offsets (preserves DOS EPS headers, TIFF previews, PDF xref tables, and PostScript stream lengths)
+// - Never deletes structural %AI... comments required by Adobe Illustrator
+function cleanEpsBuffer(arrayBuffer, mode) {
+    if (!arrayBuffer || arrayBuffer.byteLength < 8) return arrayBuffer;
+
+    // Work on a direct byte-for-byte copy of the original file
+    const output = new Uint8Array(arrayBuffer.slice(0));
+    const dosInfo = getDosEpsHeader(output);
+
+    const psStart = (dosInfo.isDosEps && dosInfo.psOffset < output.length) ? dosInfo.psOffset : 0;
+    const psMaxEnd = (dosInfo.isDosEps && dosInfo.psLength > 0)
+        ? Math.min(output.length, psStart + dosInfo.psLength)
+        : output.length;
+
+    // 1. Clean DSC Header Metadata Comments In-Place (within the first 64 KB of PostScript header)
+    const headerScanLimit = Math.min(psMaxEnd, psStart + 65536);
+
+    // Determine which DSC metadata prefixes to blank out based on mode
+    // IMPORTANT: Structural %AI... comments (%AI5_FileFormat, %AI8_CreatorVersion, %AI9_PrivateDataBegin, etc.) are NEVER touched!
+    let targetPrefixes = [];
+    if (mode === 'ALL') {
+        targetPrefixes = [
+            '%%Creator:',
+            '%%Title:',
+            '%%CreationDate:',
+            '%%For:',
+            '%%Copyright:',
+            '%%Routing:',
+            '%AI5_DirectBurn:',
+            '%AI3_Timing:'
+        ];
     } else if (mode === 'PRIVATE') {
-        // Remove only personal info
-        cleanText = cleanText.replace(/^%%Creator:.*$/gm, '');
-        cleanText = cleanText.replace(/^%%For:.*$/gm, '');
-        cleanText = cleanText.replace(/^%%CreationDate:.*$/gm, '');
-    }
-    // STOCK mode: keep creator/title, remove rest
-    if (mode === 'STOCK') {
-        cleanText = cleanText.replace(/^%%For:.*$/gm, '');
-        cleanText = cleanText.replace(/^%%CreationDate:.*$/gm, '');
-        cleanText = cleanText.replace(/^%AI\d+_.*$/gm, '');
+        targetPrefixes = [
+            '%%Creator:',
+            '%%For:',
+            '%%CreationDate:',
+            '%%Routing:',
+            '%AI5_DirectBurn:',
+            '%AI3_Timing:'
+        ];
+    } else if (mode === 'STOCK') {
+        targetPrefixes = [
+            '%%For:',
+            '%%CreationDate:',
+            '%%Routing:',
+            '%AI5_DirectBurn:',
+            '%AI3_Timing:'
+        ];
     }
 
-    // Remove XMP block from all modes except STOCK (keep stock info)
+    // Scan line-by-line in the header region and overwrite matching DSC comment values with spaces
+    // (Preserves exact byte count and original \r / \n line endings!)
+    let pos = psStart;
+    while (pos < headerScanLimit) {
+        let lineEnd = pos;
+        while (lineEnd < headerScanLimit && output[lineEnd] !== 0x0A && output[lineEnd] !== 0x0D) {
+            lineEnd++;
+        }
+
+        const lineLen = lineEnd - pos;
+        if (lineLen > 2 && output[pos] === 0x25) { // Starts with '%'
+            const lineStr = uint8ToBinaryString(output, pos, lineEnd);
+
+            // Stop header DSC scanning once we hit %%EndComments or %%BeginProlog or %%BeginPreview
+            if (lineStr.startsWith('%%EndComments') || lineStr.startsWith('%%BeginProlog') || lineStr.startsWith('%%BeginSetup')) {
+                break;
+            }
+
+            for (const prefix of targetPrefixes) {
+                if (lineStr.startsWith(prefix)) {
+                    // Replace the entire line (or keep '%%Comment:' with spaces) so it becomes a harmless blank comment '%   ...'
+                    // Keeping '%' at byte 0 and filling the rest of the line with spaces (0x20) is 100% valid PostScript comment syntax
+                    // and preserves the exact byte length of the header!
+                    for (let k = pos + 1; k < lineEnd; k++) {
+                        output[k] = 0x20; // ASCII space
+                    }
+                    break;
+                }
+            }
+        }
+
+        // Advance past \r and/or \n
+        pos = lineEnd;
+        while (pos < headerScanLimit && (output[pos] === 0x0A || output[pos] === 0x0D)) {
+            pos++;
+        }
+    }
+
+    // 2. Clean Embedded XMP Metadata Packet In-Place (Byte-Length Preserving)
+    // EPS & AI files often have multiple XMP packets (PostScript XMP stream + PDF XMP stream).
+    // If you delete the <x:xmpmeta> bytes, PostScript stream byte-counts and PDF xref tables break!
+    // Instead, we replace the contents inside <x:xmpmeta>...</x:xmpmeta> with a minimal valid empty XMP skeleton
+    // padded with spaces to the EXACT original byte length.
     if (mode === 'ALL' || mode === 'PRIVATE') {
-        cleanText = cleanText.replace(/<x:xmpmeta[\s\S]*?<\/x:xmpmeta>/gi, '');
-        // Also remove XMP packet wrappers
-        cleanText = cleanText.replace(/<\?xpacket[\s\S]*?\?>/gi, '');
+        const openTag = '<x:xmpmeta';
+        const closeTag = '</x:xmpmeta>';
+        const minimalXmp = '<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"/></x:xmpmeta>';
+
+        let searchFrom = 0;
+        while (searchFrom < output.length) {
+            const xmpStart = indexOfAsciiBytes(output, openTag, searchFrom, output.length);
+            if (xmpStart === -1) break;
+
+            const closePos = indexOfAsciiBytes(output, closeTag, xmpStart, output.length);
+            if (closePos === -1) break;
+
+            const xmpEnd = closePos + closeTag.length;
+            const totalXmpLen = xmpEnd - xmpStart;
+
+            if (totalXmpLen >= minimalXmp.length) {
+                // Write minimal clean XMP header, pad middle with spaces, and close with </x:xmpmeta>
+                const headPart = '<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"/>';
+                const tailPart = '</x:xmpmeta>';
+
+                // Fill entire old XMP region with spaces first
+                for (let i = xmpStart; i < xmpEnd; i++) {
+                    output[i] = 0x20;
+                }
+                // Write headPart at start
+                for (let i = 0; i < headPart.length; i++) {
+                    output[xmpStart + i] = headPart.charCodeAt(i);
+                }
+                // Write tailPart at end
+                const tailStart = xmpEnd - tailPart.length;
+                for (let i = 0; i < tailPart.length; i++) {
+                    output[tailStart + i] = tailPart.charCodeAt(i);
+                }
+            } else {
+                // Fallback if unusually tiny XMP block: fill with spaces
+                for (let i = xmpStart; i < xmpEnd; i++) {
+                    output[i] = 0x20;
+                }
+            }
+
+            searchFrom = xmpEnd;
+        }
     }
 
-    // Clean up empty lines left behind
-    cleanText = cleanText.replace(/\n{3,}/g, '\n\n');
-
-    return cleanText;
+    return output.buffer;
 }
 
 // ============================================================
@@ -1709,8 +1878,7 @@ async function processFiles(mode) {
                         const text = new TextDecoder('utf-8').decode(newBuffer);
                         fileObj.metadata = extractSvgMetadata(text);
                     } else {
-                        const text = new TextDecoder('latin1').decode(newBuffer);
-                        fileObj.metadata = extractEpsMetadata(text, newBuffer);
+                        fileObj.metadata = extractEpsMetadata(newBuffer);
                     }
                 }
             } catch (e) {
@@ -1996,16 +2164,9 @@ function processVector(fileObj, mode) {
         const cleanText = cleanSvgFile(text, mode);
         return new Blob([cleanText], { type: 'image/svg+xml' });
     } else {
-        // EPS / AI
-        const text = new TextDecoder('latin1').decode(fileObj.originalArrayBuffer);
-        const cleanText = cleanEpsFile(text, fileObj.originalArrayBuffer, mode);
-        const encoder = new TextEncoder();
-        // Use latin1 encoding for EPS
-        const bytes = new Uint8Array(cleanText.length);
-        for (let i = 0; i < cleanText.length; i++) {
-            bytes[i] = cleanText.charCodeAt(i) & 0xFF;
-        }
-        return new Blob([bytes], { type: 'application/postscript' });
+        // EPS / AI — 100% Byte-Safe in-place buffer cleaning
+        const cleanedBuffer = cleanEpsBuffer(fileObj.originalArrayBuffer, mode);
+        return new Blob([cleanedBuffer], { type: fileObj.type || 'application/postscript' });
     }
 }
 
@@ -2772,8 +2933,6 @@ function extractXmpFromBytes(arrayBuffer) {
 
     const xmpString = fullStr.substring(xmpStart, xmpEnd + 12);
 
-    result['RawXMP'] = xmpString;
-
     try {
         const parser = new DOMParser();
         const xmlDoc = parser.parseFromString(xmpString, 'application/xml');
@@ -2782,6 +2941,19 @@ function extractXmpFromBytes(arrayBuffer) {
         for (let i = 0; i < allElements.length; i++) {
             const el = allElements[i];
             const tagName = el.localName || el.tagName;
+
+            // Also extract attributes from rdf:Description (Adobe Illustrator/Photoshop often stores XMP properties as attributes)
+            if (tagName === 'Description' && el.attributes) {
+                for (let a = 0; a < el.attributes.length; a++) {
+                    const attr = el.attributes[a];
+                    if (attr.name.startsWith('xmlns') || attr.name === 'rdf:about' || attr.name === 'about') continue;
+                    const val = attr.value.trim();
+                    if (val && !result[attr.name]) {
+                        result[attr.name] = val;
+                    }
+                }
+                continue;
+            }
 
             if (['RDF', 'Description', 'xmpmeta', 'Seq', 'Bag', 'Alt', 'li'].includes(tagName)) continue;
 
@@ -2809,6 +2981,11 @@ function extractXmpFromBytes(arrayBuffer) {
         }
     } catch (e) {
         console.error("XMP XML parsing error:", e);
+    }
+
+    // Only include RawXMP if actual metadata fields were found inside the XMP packet
+    if (Object.keys(result).length > 0) {
+        result['RawXMP'] = xmpString.replace(/\s{10,}/g, ' ');
     }
 
     return result;
