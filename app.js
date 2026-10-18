@@ -762,21 +762,20 @@ function stripJpegC2pa(arrayBuffer) {
 function cleanXmpStringPreservingStock(xmpStr) {
     if (!xmpStr) return xmpStr;
 
-    // Remove standalone Software/CreatorTool attributes from rdf:Description
-    let cleaned = xmpStr.replace(/\s+(?:xmp:CreatorTool|tiff:Software|photoshop:SoftwareAgent|xmpMM:SoftwareAgent|stEvt:softwareAgent)="[^"]*"/gi, '');
-    cleaned = cleaned.replace(/\s+(?:xmp:CreatorTool|tiff:Software|photoshop:SoftwareAgent|xmpMM:SoftwareAgent|stEvt:softwareAgent)='[^']*'/gi, '');
+    // 1. Remove standalone Software/CreatorTool/softwareAgent attributes from rdf:Description
+    let cleaned = xmpStr.replace(/\s+(?:[a-zA-Z0-9_-]+:)?(?:CreatorTool|Software|softwareAgent|SoftwareAgent)\s*=\s*(?:"[^"]*"|'[^']*')/gi, '');
 
-    // Remove element-based CreatorTool and Software tags
-    cleaned = cleaned.replace(/<(?:xmp:CreatorTool|tiff:Software|photoshop:SoftwareAgent)[\s\S]*?<\/(?:xmp:CreatorTool|tiff:Software|photoshop:SoftwareAgent)>/gi, '');
-    cleaned = cleaned.replace(/<(?:xmp:CreatorTool|tiff:Software|photoshop:SoftwareAgent)[^>]*\/>/gi, '');
+    // 2. Remove element-based CreatorTool, Software, and softwareAgent tags
+    cleaned = cleaned.replace(/<(?:[a-zA-Z0-9_-]+:)?(?:CreatorTool|Software|softwareAgent|SoftwareAgent)[\s\S]*?<\/(?:[a-zA-Z0-9_-]+:)?(?:CreatorTool|Software|softwareAgent|SoftwareAgent)>/gi, '');
+    cleaned = cleaned.replace(/<(?:[a-zA-Z0-9_-]+:)?(?:CreatorTool|Software|softwareAgent|SoftwareAgent)[^>]*\/>/gi, '');
 
-    // Remove Topaz specific tags / namespaces if present
-    cleaned = cleaned.replace(/<topaz:[^>]*>[\s\S]*?<\/topaz:[^>]*>/gi, '');
-    cleaned = cleaned.replace(/<topaz:[^>]*\/>/gi, '');
+    // 3. Remove Topaz specific tags / namespaces
+    cleaned = cleaned.replace(/<(?:topaz|Topaz):[^>]*>[\s\S]*?<\/(?:topaz|Topaz):[^>]*>/gi, '');
+    cleaned = cleaned.replace(/<(?:topaz|Topaz):[^>]*\/>/gi, '');
 
-    // Blank out any remaining mentions of Topaz, Gigapixel, or AI upscalers inside history/comments
-    cleaned = cleaned.replace(/Topaz\s+Gigapixel[^\r\n<"]*/gi, '');
-    cleaned = cleaned.replace(/Topaz\s+Photo[^\r\n<"]*/gi, '');
+    // 4. Blank out any remaining mentions of Topaz, Gigapixel, or AI upscaler strings
+    cleaned = cleaned.replace(/Topaz[^\r\n<"']*/gi, '');
+    cleaned = cleaned.replace(/Gigapixel[^\r\n<"']*/gi, '');
 
     return cleaned;
 }
@@ -814,11 +813,52 @@ function cleanXmpSegmentBytesPreservingStock(segBytes) {
 // Keeps APP1 (XMP) and APP13 (Photoshop IPTC containing title, keywords, copyright)
 // Strips APP11 (C2PA) and removes GPS / camera private tags and Software/CreatorTool from EXIF and XMP
 function stripJpegForStockSafe(arrayBuffer) {
-    const uint8 = new Uint8Array(arrayBuffer);
+    if (!arrayBuffer || arrayBuffer.byteLength < 4) return arrayBuffer;
+    let uint8 = new Uint8Array(arrayBuffer);
     if (uint8[0] !== 0xFF || uint8[1] !== 0xD8) return arrayBuffer;
 
+    // Pass 1: Strip Software, HostComputer, GPS & sensitive private camera tags via piexif
+    try {
+        const fullStr = uint8ToBinaryString(uint8);
+        const exifObj = piexif.load(fullStr);
+        let modified = false;
+
+        if (exifObj["0th"]) {
+            delete exifObj["0th"][piexif.ImageIFD.Software];
+            delete exifObj["0th"][piexif.ImageIFD.HostComputer];
+            delete exifObj["0th"][piexif.ImageIFD.ProcessingSoftware];
+            modified = true;
+        }
+        if (exifObj.GPS && Object.keys(exifObj.GPS).length > 0) {
+            exifObj.GPS = {};
+            modified = true;
+        }
+        if (exifObj.Exif) {
+            delete exifObj.Exif[piexif.ExifIFD.MakerNote];
+            delete exifObj.Exif[piexif.ExifIFD.DeviceSettingDescription];
+            delete exifObj.Exif[piexif.ExifIFD.BodySerialNumber];
+            delete exifObj.Exif[piexif.ExifIFD.LensSerialNumber];
+            delete exifObj.Exif[piexif.ExifIFD.CameraOwnerName];
+            modified = true;
+        }
+
+        if (modified) {
+            const dumped = piexif.dump(exifObj);
+            const inserted = piexif.insert(dumped, fullStr);
+            const newBytes = new Uint8Array(inserted.length);
+            for (let i = 0; i < inserted.length; i++) {
+                newBytes[i] = inserted.charCodeAt(i) & 0xFF;
+            }
+            uint8 = newBytes;
+        }
+    } catch (e) {
+        console.warn("piexif EXIF clean warning:", e);
+    }
+
+    // Pass 2: Strip C2PA APP11 markers and clean XMP in-place
     const chunks = [];
     chunks.push({ start: 0, end: 2 }); // SOI
+    const xmpPrefix = 'http://ns.adobe.com/xap/1.0/\0';
 
     let offset = 2;
     while (offset < uint8.length - 4) {
@@ -859,45 +899,11 @@ function stripJpegForStockSafe(arrayBuffer) {
             continue;
         }
 
-        // Handle APP1 (Exif vs XMP)
+        // Clean XMP APP1 in-place (removes CreatorTool / Topaz, preserves Title / Keywords / Copyright)
         if (marker === 0xE1) {
             const segDataOffset = offset + 2;
-            const headerStr = String.fromCharCode.apply(null, uint8.subarray(segDataOffset, Math.min(segDataOffset + 28, segEnd)));
-            
-            if (headerStr.startsWith('Exif\0\0')) {
-                // EXIF APP1: Safely strip Software, CreatorTool, GPS, and sensitive camera tags
-                try {
-                    const exifStr = uint8ToBinaryString(uint8, markerStart, segEnd);
-                    const exifObj = piexif.load(exifStr);
-                    // Remove Software & HostComputer in 0th IFD (e.g. Topaz Gigapixel AI)
-                    if (exifObj["0th"]) {
-                        delete exifObj["0th"][piexif.ImageIFD.Software];
-                        delete exifObj["0th"][piexif.ImageIFD.HostComputer];
-                        delete exifObj["0th"][piexif.ImageIFD.ProcessingSoftware];
-                    }
-                    // Remove GPS
-                    if (exifObj.GPS) exifObj.GPS = {};
-                    // Remove MakerNote, DeviceSetting, and private serials
-                    if (exifObj.Exif) {
-                        delete exifObj.Exif[piexif.ExifIFD.MakerNote];
-                        delete exifObj.Exif[piexif.ExifIFD.DeviceSettingDescription];
-                        delete exifObj.Exif[piexif.ExifIFD.BodySerialNumber];
-                        delete exifObj.Exif[piexif.ExifIFD.LensSerialNumber];
-                        delete exifObj.Exif[piexif.ExifIFD.CameraOwnerName];
-                    }
-                    const newExifDump = piexif.dump(exifObj);
-                    const newExifBytes = new Uint8Array(newExifDump.length);
-                    for (let b = 0; b < newExifDump.length; b++) {
-                        newExifBytes[b] = newExifDump.charCodeAt(b) & 0xFF;
-                    }
-                    chunks.push({ customBytes: newExifBytes });
-                    offset = segEnd;
-                    continue;
-                } catch (e) {
-                    // If parsing failed, keep chunk as fallback
-                }
-            } else if (headerStr.startsWith('http://ns.adobe.com/xap/1.0/\0')) {
-                // XMP APP1: Keep Title, Keywords, Description & Copyright, but strip CreatorTool, Software, Topaz info
+            const headerStr = String.fromCharCode.apply(null, uint8.subarray(segDataOffset, Math.min(segDataOffset + 32, segEnd)));
+            if (headerStr.startsWith(xmpPrefix)) {
                 try {
                     const segBytes = uint8.slice(markerStart, segEnd);
                     const cleanedSegBytes = cleanXmpSegmentBytesPreservingStock(segBytes);
@@ -905,12 +911,12 @@ function stripJpegForStockSafe(arrayBuffer) {
                     offset = segEnd;
                     continue;
                 } catch (e) {
-                    // fallback
+                    console.warn("XMP segment clean error:", e);
                 }
             }
         }
 
-        // Keep APP13 (IPTC), APP1 (XMP), and all other image segments
+        // Keep all other segments (IPTC, ICC, Tables, Scan data)
         chunks.push({ start: markerStart, end: segEnd });
         offset = segEnd;
     }
@@ -1047,6 +1053,63 @@ function stripWebpC2pa(arrayBuffer) {
         if (fourCC === 'c2pa') {
             offset = chunkEnd;
             continue;
+        }
+
+        // Clean XMP chunk in WebP
+        if (fourCC === 'XMP ') {
+            try {
+                const xmpBytes = uint8.subarray(offset + 8, offset + 8 + size);
+                const xmpText = new TextDecoder('utf-8', { fatal: false }).decode(xmpBytes);
+                const cleanedXmp = cleanXmpStringPreservingStock(xmpText);
+                const encodedCleaned = new TextEncoder().encode(cleanedXmp);
+                if (encodedCleaned.length <= size) {
+                    const customChunk = new Uint8Array(chunkTotal);
+                    customChunk.set(uint8.subarray(offset, offset + 8), 0);
+                    customChunk.set(encodedCleaned, 8);
+                    for (let p = 8 + encodedCleaned.length; p < 8 + size; p++) {
+                        customChunk[p] = 0x20;
+                    }
+                    if (size % 2 === 1) customChunk[chunkTotal - 1] = 0;
+                    chunks.push({ customBytes: customChunk });
+                    offset = chunkEnd;
+                    continue;
+                }
+            } catch (e) { /* fallback */ }
+        }
+
+        // Clean EXIF chunk in WebP
+        if (fourCC === 'EXIF') {
+            try {
+                const exifBytes = uint8.subarray(offset + 8, offset + 8 + size);
+                const fullStr = uint8ToBinaryString(exifBytes);
+                const exifObj = piexif.load(fullStr);
+                if (exifObj['0th']) {
+                    delete exifObj['0th'][piexif.ImageIFD.Software];
+                    delete exifObj['0th'][piexif.ImageIFD.HostComputer];
+                    delete exifObj['0th'][piexif.ImageIFD.ProcessingSoftware];
+                }
+                if (exifObj.GPS) exifObj.GPS = {};
+                if (exifObj.Exif) {
+                    delete exifObj.Exif[piexif.ExifIFD.MakerNote];
+                    delete exifObj.Exif[piexif.ExifIFD.DeviceSettingDescription];
+                    delete exifObj.Exif[piexif.ExifIFD.BodySerialNumber];
+                    delete exifObj.Exif[piexif.ExifIFD.LensSerialNumber];
+                    delete exifObj.Exif[piexif.ExifIFD.CameraOwnerName];
+                }
+                const dumped = piexif.dump(exifObj);
+                const newExifLen = dumped.length;
+                const newChunkTotal = 8 + newExifLen + (newExifLen % 2);
+                const customChunk = new Uint8Array(newChunkTotal);
+                for (let i = 0; i < 4; i++) customChunk[i] = fourCC.charCodeAt(i);
+                customChunk[4] = newExifLen & 0xFF;
+                customChunk[5] = (newExifLen >> 8) & 0xFF;
+                customChunk[6] = (newExifLen >> 16) & 0xFF;
+                customChunk[7] = (newExifLen >> 24) & 0xFF;
+                for (let i = 0; i < newExifLen; i++) customChunk[8 + i] = dumped.charCodeAt(i) & 0xFF;
+                chunks.push({ customBytes: customChunk });
+                offset = chunkEnd;
+                continue;
+            } catch (e) { /* fallback */ }
         }
 
         chunks.push({ start: offset, end: chunkEnd });
@@ -1936,7 +1999,8 @@ function cleanVideoFile(arrayBuffer, file, mode) {
     const ext = getFileExtension(file.name);
 
     if (['mp4', 'mov', 'm4v'].includes(ext) || file.type === 'video/mp4' || file.type === 'video/quicktime') {
-        return cleanMp4File(arrayBuffer, mode);
+        const cleanedMp4 = cleanMp4File(arrayBuffer, mode);
+        return cleanGenericVideoXmp(cleanedMp4, mode);
     }
 
     if (['webm', 'mkv'].includes(ext) || file.type === 'video/webm' || file.type === 'video/x-matroska') {
@@ -2005,8 +2069,8 @@ function cleanMp4File(arrayBuffer, mode) {
                     offset = atomEnd;
                     continue;
                 }
-                // 2. Strip encoder/software tags (©too), GPS (©xyz, loci), and authoring tool atoms
-                if (type === '\xA9too' || type === '\xA9xyz' || type === 'loci') {
+                // 2. Strip encoder/software tags (©too, ©swr, ©enc), GPS (©xyz, loci), and authoring tool atoms
+                if (type === '\xA9too' || type === '\xA9swr' || type === '\xA9enc' || type === '\xA9xyz' || type === 'loci') {
                     offset = atomEnd;
                     continue;
                 }
@@ -2088,39 +2152,78 @@ function fixMp4ContainerSizes(bytes) {
 }
 
 function cleanWebmFile(arrayBuffer, mode) {
-    // WebM/MKV: Strip XMP from raw bytes
-    return cleanGenericVideoXmp(arrayBuffer, mode);
+    const cleaned = cleanGenericVideoXmp(arrayBuffer, mode);
+    const uint8 = new Uint8Array(cleaned);
+    const scanLimit = Math.min(uint8.length, 65536);
+    // Blank out any Topaz or Gigapixel occurrences in EBML header
+    for (let i = 0; i < scanLimit - 5; i++) {
+        if (uint8[i] === 0x54 && uint8[i+1] === 0x6F && uint8[i+2] === 0x70 && uint8[i+3] === 0x61 && uint8[i+4] === 0x7A) {
+            // "Topaz" found
+            let end = i + 5;
+            while (end < scanLimit && uint8[end] >= 0x20 && uint8[end] <= 0x7E) end++;
+            for (let k = i; k < end; k++) uint8[k] = 0x20;
+        }
+    }
+    return uint8.buffer;
 }
 
 function cleanGenericVideoXmp(arrayBuffer, mode) {
-    const bytes = new Uint8Array(arrayBuffer);
-    const decoder = new TextDecoder('utf-8', { fatal: false });
-    const fullStr = decoder.decode(bytes);
-
-    const xmpStart = fullStr.indexOf('<x:xmpmeta');
-    if (xmpStart === -1) return arrayBuffer;
-
-    const xmpEnd = fullStr.indexOf('</x:xmpmeta>', xmpStart);
-    if (xmpEnd === -1) return arrayBuffer;
-
+    if (!arrayBuffer || arrayBuffer.byteLength < 20) return arrayBuffer;
     const output = new Uint8Array(arrayBuffer.slice(0));
+    const openTag = [0x3C, 0x78, 0x3A, 0x78, 0x6D, 0x70, 0x6D, 0x65, 0x74, 0x61]; // '<x:xmpmeta'
+    const closeTag = [0x3C, 0x2F, 0x78, 0x3A, 0x78, 0x6D, 0x70, 0x6D, 0x65, 0x74, 0x61, 0x3E]; // '</x:xmpmeta>'
 
-    if (mode === 'ALL') {
-        const space = 0x20;
-        for (let i = xmpStart; i < xmpEnd + 12 && i < output.length; i++) {
-            output[i] = space;
-        }
-    } else if (mode === 'STOCK') {
-        const xmpBlock = fullStr.substring(xmpStart, xmpEnd + 12);
-        const cleanedXmp = cleanXmpStringPreservingStock(xmpBlock);
-        const encodedCleaned = new TextEncoder().encode(cleanedXmp);
-        const origLen = (xmpEnd + 12) - xmpStart;
-        if (encodedCleaned.length <= origLen) {
-            output.set(encodedCleaned, xmpStart);
-            for (let i = xmpStart + encodedCleaned.length; i < xmpEnd + 12 && i < output.length; i++) {
-                output[i] = 0x20;
+    let searchPos = 0;
+    while (searchPos < output.length - 20) {
+        let xmpStart = -1;
+        for (let i = searchPos; i <= output.length - 10; i++) {
+            if (output[i] === 0x3C && output[i + 1] === 0x78 && output[i + 2] === 0x3A) {
+                let match = true;
+                for (let k = 3; k < 10; k++) {
+                    if (output[i + k] !== openTag[k]) { match = false; break; }
+                }
+                if (match) { xmpStart = i; break; }
             }
         }
+        if (xmpStart === -1) break;
+
+        let xmpEnd = -1;
+        for (let i = xmpStart + 10; i <= output.length - 12; i++) {
+            if (output[i] === 0x3C && output[i + 1] === 0x2F && output[i + 2] === 0x78) {
+                let match = true;
+                for (let k = 3; k < 12; k++) {
+                    if (output[i + k] !== closeTag[k]) { match = false; break; }
+                }
+                if (match) { xmpEnd = i; break; }
+            }
+        }
+        if (xmpEnd === -1) break;
+
+        const xmpBlockEnd = xmpEnd + 12;
+        const origLen = xmpBlockEnd - xmpStart;
+
+        if (mode === 'ALL') {
+            for (let i = xmpStart; i < xmpBlockEnd; i++) {
+                output[i] = 0x20;
+            }
+        } else if (mode === 'STOCK') {
+            try {
+                const xmpBytes = output.subarray(xmpStart, xmpBlockEnd);
+                const xmpBlock = new TextDecoder('utf-8', { fatal: false }).decode(xmpBytes);
+                const cleanedXmp = cleanXmpStringPreservingStock(xmpBlock);
+                const encodedCleaned = new TextEncoder().encode(cleanedXmp);
+                if (encodedCleaned.length <= origLen) {
+                    output.set(encodedCleaned, xmpStart);
+                    for (let i = xmpStart + encodedCleaned.length; i < xmpBlockEnd; i++) {
+                        output[i] = 0x20;
+                    }
+                }
+            } catch (e) {
+                console.warn("Video XMP cleaning error:", e);
+            }
+        }
+
+        searchPos = xmpBlockEnd;
     }
 
     return output.buffer;
@@ -2200,25 +2303,30 @@ async function processImage(fileObj, mode) {
     if (mode === 'ALL') {
         finalDataURL = await cleanViaCanvas(fileObj);
     } else if (mode === 'STOCK') {
-        if (fileObj.type === 'image/jpeg') {
+        const ext = getFileExtension(fileObj.name);
+        const isJpeg = fileObj.type === 'image/jpeg' || fileObj.type === 'image/jpg' || ext === 'jpg' || ext === 'jpeg';
+        const isPng = fileObj.type === 'image/png' || ext === 'png';
+        const isWebp = fileObj.type === 'image/webp' || ext === 'webp';
+
+        if (isJpeg) {
             try {
-                // In Stock Safe mode: strip GPS/camera private data & C2PA, but KEEP Title/Keywords/IPTC/XMP
+                // In Stock Safe mode: strip GPS/camera private data, Software/CreatorTool & C2PA, but KEEP Title/Keywords/IPTC/XMP
                 const strippedBuf = stripJpegForStockSafe(fileObj.originalArrayBuffer);
                 return new Blob([strippedBuf], { type: 'image/jpeg' });
             } catch (e) {
                 console.error("Stock Safe JPEG processing error:", e);
                 finalDataURL = await cleanViaCanvas(fileObj);
             }
-        } else if (fileObj.type === 'image/png') {
-            // PNG Stock Safe: strip C2PA chunk, preserve text chunks
+        } else if (isPng) {
+            // PNG Stock Safe: strip C2PA chunk & Software, preserve text chunks
             try {
                 const strippedBuf = stripPngC2pa(fileObj.originalArrayBuffer);
                 return new Blob([strippedBuf], { type: 'image/png' });
             } catch (e) {
                 finalDataURL = await cleanViaCanvas(fileObj);
             }
-        } else if (fileObj.type === 'image/webp') {
-            // WebP Stock Safe: strip C2PA chunk, keep EXIF/XMP
+        } else if (isWebp) {
+            // WebP Stock Safe: strip C2PA chunk, clean Software from EXIF/XMP
             try {
                 const strippedBuf = stripWebpC2pa(fileObj.originalArrayBuffer);
                 return new Blob([strippedBuf], { type: 'image/webp' });
