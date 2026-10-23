@@ -2,3 +2,5 @@
 *.zip
 .DS_Store
 Thumbs.db
+.src_dev_backup/
+
