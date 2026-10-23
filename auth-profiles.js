@@ -112,61 +112,189 @@ function sanitizeProfile(p, fallbackId) {
     };
 }
 
-// Helper: Map Illustrator Year to Internal Major Version Number (e.g. 2024 -> 28)
-export function getIllustratorMajorVersion(versionYear) {
+// Helper: Map Illustrator Year to Authentic Forensic Metadata Profile
+export function getIllustratorAuthenticMeta(versionYear) {
     const v = String(versionYear || "2024").trim();
     const map = {
-        "2015": "19",
-        "2016": "20",
-        "2017": "21",
-        "2018": "22",
-        "2019": "23",
-        "2020": "24",
-        "2021": "25",
-        "2022": "26",
-        "2023": "27",
-        "2024": "28",
-        "2025": "29",
-        "2026": "30"
+        "2026": {
+            shortVer: "30.4",
+            fullVer: "30.4.0",
+            dscCreator: "Adobe Illustrator(R) 30.4",
+            xmpCreatorTool: "Adobe Illustrator 30.4 (Windows)",
+            buildNumber: "Adobe Illustrator(R) 30.4.0 x226 R agm 8.0 ct 11.7",
+            xmptk: "Adobe XMP Core 10.0-c000 1.000000, 0000/00/00-00:00:00        ",
+            pdfProducer: "Adobe PDF library 18.00"
+        },
+        "2025": {
+            shortVer: "29.5",
+            fullVer: "29.5.0",
+            dscCreator: "Adobe Illustrator(R) 29.5",
+            xmpCreatorTool: "Adobe Illustrator 29.5 (Windows)",
+            buildNumber: "Adobe Illustrator(R) 29.5.0 x134 R agm 7.1 ct 11.5",
+            xmptk: "Adobe XMP Core 9.1-c002 79.a1cd12f, 2024/11/15-19:08:22        ",
+            pdfProducer: "Adobe PDF library 17.00"
+        },
+        "2024": {
+            shortVer: "28.5",
+            fullVer: "28.5.0",
+            dscCreator: "Adobe Illustrator(R) 28.5",
+            xmpCreatorTool: "Adobe Illustrator 28.5 (Windows)",
+            buildNumber: "Adobe Illustrator(R) 28.5.0 x132 R agm 7.0 ct 11.4",
+            xmptk: "Adobe XMP Core 9.1-c001 79.675d0f7, 2023/06/11-19:21:16        ",
+            pdfProducer: "Adobe PDF library 17.00"
+        },
+        "2023": {
+            shortVer: "27.9",
+            fullVer: "27.9.0",
+            dscCreator: "Adobe Illustrator(R) 27.9",
+            xmpCreatorTool: "Adobe Illustrator 27.9 (Windows)",
+            buildNumber: "Adobe Illustrator(R) 27.9.0 x80 R agm 5.1 ct 11.2",
+            xmptk: "Adobe XMP Core 9.0-c001 79.14ecb42, 2022/12/02-19:12:44        ",
+            pdfProducer: "Adobe PDF library 17.00"
+        },
+        "2022": {
+            shortVer: "26.5",
+            fullVer: "26.5.0",
+            dscCreator: "Adobe Illustrator(R) 26.5",
+            xmpCreatorTool: "Adobe Illustrator 26.5 (Windows)",
+            buildNumber: "Adobe Illustrator(R) 26.5.0 x22 R agm 5.0 ct 11.0",
+            xmptk: "Adobe XMP Core 7.1-c000 79.b0f8be9, 2021/12/08-19:11:22        ",
+            pdfProducer: "Adobe PDF library 16.03"
+        },
+        "2021": {
+            shortVer: "25.4",
+            fullVer: "25.4.1",
+            dscCreator: "Adobe Illustrator(R) 25.4",
+            xmpCreatorTool: "Adobe Illustrator 25.4 (Windows)",
+            buildNumber: "Adobe Illustrator(R) 25.4.1 x498 R agm 4.85 ct 5.75",
+            xmptk: "Adobe XMP Core 7.0-c000 79.dabacbb, 2021/04/14-00:39:44        ",
+            pdfProducer: "Adobe PDF library 15.00"
+        },
+        "2020": {
+            shortVer: "24.3",
+            fullVer: "24.3.0",
+            dscCreator: "Adobe Illustrator(R) 24.3",
+            xmpCreatorTool: "Adobe Illustrator 24.3 (Windows)",
+            buildNumber: "Adobe Illustrator(R) 24.3.0 x569 R agm 4.7767 ct 5.4352",
+            xmptk: "Adobe XMP Core 6.0-c002 79.164488, 2020/07/10-22:06:53        ",
+            pdfProducer: "Adobe PDF library 15.00"
+        },
+        "2019": {
+            shortVer: "23.1",
+            fullVer: "23.1.0",
+            dscCreator: "Adobe Illustrator(R) 23.1",
+            xmpCreatorTool: "Adobe Illustrator CC 23.1 (Windows)",
+            buildNumber: "Adobe Illustrator(R) 23.1.0 x670 R agm 4.72 ct 5.30",
+            xmptk: "Adobe XMP Core 5.6-c145 79.163499, 2018/08/13-16:40:22        ",
+            pdfProducer: "Adobe PDF library 15.00"
+        },
+        "2018": {
+            shortVer: "22.1",
+            fullVer: "22.1.0",
+            dscCreator: "Adobe Illustrator(R) 22.1",
+            xmpCreatorTool: "Adobe Illustrator CC 22.1 (Windows)",
+            buildNumber: "Adobe Illustrator(R) 22.1.0 x312 R agm 4.67 ct 5.20",
+            xmptk: "Adobe XMP Core 5.6-c143 79.161356, 2017/09/07-01:11:22        ",
+            pdfProducer: "Adobe PDF library 15.00"
+        },
+        "2017": {
+            shortVer: "21.1",
+            fullVer: "21.1.0",
+            dscCreator: "Adobe Illustrator(R) 21.1",
+            xmpCreatorTool: "Adobe Illustrator CC 2017 (Windows)",
+            buildNumber: "Adobe Illustrator(R) 21.1.0 x326 R agm 4.62 ct 5.10",
+            xmptk: "Adobe XMP Core 5.6-c137 79.159768, 2016/08/11-13:24:42        ",
+            pdfProducer: "Adobe PDF library 15.00"
+        },
+        "2016": {
+            shortVer: "20.1",
+            fullVer: "20.1.0",
+            dscCreator: "Adobe Illustrator(R) 20.1",
+            xmpCreatorTool: "Adobe Illustrator CC 2015.3 (Windows)",
+            buildNumber: "Adobe Illustrator(R) 20.1.0 x174 R agm 4.58 ct 5.02",
+            xmptk: "Adobe XMP Core 5.6-c132 79.159284, 2016/04/19-13:13:40        ",
+            pdfProducer: "Adobe PDF library 15.00"
+        },
+        "2015": {
+            shortVer: "19.2",
+            fullVer: "19.2.1",
+            dscCreator: "Adobe Illustrator(R) 19.2",
+            xmpCreatorTool: "Adobe Illustrator CC 2015 (Windows)",
+            buildNumber: "Adobe Illustrator(R) 19.2.1 x147 R agm 4.55 ct 5.00",
+            xmptk: "Adobe XMP Core 5.6-c067 79.157747, 2015/03/30-23:40:42        ",
+            pdfProducer: "Adobe PDF library 15.00"
+        }
     };
-    return map[v] || "28";
+    return map[v] || map["2024"];
+}
+
+// Helper: Map Photoshop Year to Authentic Forensic Metadata Profile
+export function getPhotoshopAuthenticMeta(versionYear) {
+    const v = String(versionYear || "2024").trim();
+    const map = {
+        "2026": {
+            softwareStr: "Adobe Photoshop 27.4 (Windows)",
+            xmptk: "Adobe XMP Core 10.0-c000 1.000000, 0000/00/00-00:00:00        "
+        },
+        "2025": {
+            softwareStr: "Adobe Photoshop 26.5 (Windows)",
+            xmptk: "Adobe XMP Core 9.1-c002 79.a1cd12f, 2024/11/15-19:08:22        "
+        },
+        "2024": {
+            softwareStr: "Adobe Photoshop 25.9 (Windows)",
+            xmptk: "Adobe XMP Core 9.1-c002 79.f3a8c9b, 2024/03/12-14:22:10        "
+        },
+        "2023": {
+            softwareStr: "Adobe Photoshop 24.7 (Windows)",
+            xmptk: "Adobe XMP Core 9.0-c001 79.14ecb42, 2022/12/02-19:12:44        "
+        },
+        "2022": {
+            softwareStr: "Adobe Photoshop 23.5 (Windows)",
+            xmptk: "Adobe XMP Core 7.1-c000 79.b0f8be9, 2021/12/08-19:11:22        "
+        },
+        "2021": {
+            softwareStr: "Adobe Photoshop 22.5 (Windows)",
+            xmptk: "Adobe XMP Core 6.0-c006 79.dabacbb, 2021/04/14-00:39:44        "
+        },
+        "2020": {
+            softwareStr: "Adobe Photoshop 21.2 (Windows)",
+            xmptk: "Adobe XMP Core 6.0-c002 79.164488, 2020/07/10-22:06:53        "
+        },
+        "2019": {
+            softwareStr: "Adobe Photoshop CC 2019 (Windows)",
+            xmptk: "Adobe XMP Core 5.6-c145 79.163499, 2018/08/13-16:40:22        "
+        },
+        "2018": {
+            softwareStr: "Adobe Photoshop CC 2018 (Windows)",
+            xmptk: "Adobe XMP Core 5.6-c142 79.160924, 2017/07/13-01:06:39        "
+        },
+        "2017": {
+            softwareStr: "Adobe Photoshop CC 2017 (Windows)",
+            xmptk: "Adobe XMP Core 5.6-c138 79.159824, 2016/09/14-01:09:01        "
+        },
+        "2016": {
+            softwareStr: "Adobe Photoshop CC 2015.5 (Windows)",
+            xmptk: "Adobe XMP Core 5.6-c132 79.159284, 2016/04/19-13:13:40        "
+        },
+        "2015": {
+            softwareStr: "Adobe Photoshop CC 2015 (Windows)",
+            xmptk: "Adobe XMP Core 5.6-c067 79.157747, 2015/03/30-23:40:42        "
+        }
+    };
+    return map[v] || map["2024"];
+}
+
+// Helper: Map Illustrator Year to Internal Major Version Number (e.g. 2024 -> 28.5)
+export function getIllustratorMajorVersion(versionYear) {
+    return getIllustratorAuthenticMeta(versionYear).shortVer;
 }
 
 // Helper: Map Software + Version Year (2015-2026) to exact commercial Adobe strings
 export function getSoftwareString(software, version) {
-    const v = String(version);
     if (software === "Illustrator") {
-        const aiMap = {
-            "2015": "Adobe Illustrator CC 2015 (Windows)",
-            "2016": "Adobe Illustrator CC 2015.3 (Windows)",
-            "2017": "Adobe Illustrator CC 2017 (Windows)",
-            "2018": "Adobe Illustrator CC 2018 (Windows)",
-            "2019": "Adobe Illustrator CC 2019 (Windows)",
-            "2020": "Adobe Illustrator 24.0 (Windows)",
-            "2021": "Adobe Illustrator 25.0 (Windows)",
-            "2022": "Adobe Illustrator 26.0 (Windows)",
-            "2023": "Adobe Illustrator 27.0 (Windows)",
-            "2024": "Adobe Illustrator 28.0 (Windows)",
-            "2025": "Adobe Illustrator 29.0 (Windows)",
-            "2026": "Adobe Illustrator 30.0 (Windows)"
-        };
-        return aiMap[v] || `Adobe Illustrator ${v}.0 (Windows)`;
+        return getIllustratorAuthenticMeta(version).xmpCreatorTool;
     } else {
-        const psMap = {
-            "2015": "Adobe Photoshop CC 2015 (Windows)",
-            "2016": "Adobe Photoshop CC 2015.5 (Windows)",
-            "2017": "Adobe Photoshop CC 2017 (Windows)",
-            "2018": "Adobe Photoshop CC 2018 (Windows)",
-            "2019": "Adobe Photoshop CC 2019 (Windows)",
-            "2020": "Adobe Photoshop 21.0 (Windows)",
-            "2021": "Adobe Photoshop 22.0 (Windows)",
-            "2022": "Adobe Photoshop 23.0 (Windows)",
-            "2023": "Adobe Photoshop 24.0 (Windows)",
-            "2024": "Adobe Photoshop 25.0 (Windows)",
-            "2025": "Adobe Photoshop 26.0 (Windows)",
-            "2026": "Adobe Photoshop 27.0 (Windows)"
-        };
-        return psMap[v] || `Adobe Photoshop ${v}.0 (Windows)`;
+        return getPhotoshopAuthenticMeta(version).softwareStr;
     }
 }
 
@@ -484,13 +612,14 @@ function updateModalPreview(nameVal, psVer, aiVer, osVal) {
             </div>
         `;
     } else {
-        const psStr = getSoftwareString("Photoshop", psVer);
-        const aiStr = getSoftwareString("Illustrator", aiVer);
+        const psMeta = getPhotoshopAuthenticMeta(psVer);
+        const aiMeta = getIllustratorAuthenticMeta(aiVer);
         previewEl.innerHTML = `
             <div style="display: flex; flex-direction: column; gap: 6px;">
-                <div><i class='bx bx-user-check' style="color: var(--accent-primary);"></i> <strong>Vector Owner / EXIF Artist:</strong> <code>${escapeHtml(nameVal)}</code></div>
-                <div><i class='bx bx-image' style="color: var(--accent-primary);"></i> <strong>Raster Images (JPG/PNG/WebP):</strong> <code>${escapeHtml(psStr)}</code> on <code>${escapeHtml(osVal)}</code></div>
-                <div><i class='bx bx-vector' style="color: var(--accent-secondary);"></i> <strong>Vector Graphics (SVG/EPS/AI):</strong> <code>${escapeHtml(aiStr)}</code> (Owner: <code>${escapeHtml(nameVal)}</code>)</div>
+                <div><i class='bx bx-user-check' style="color: var(--accent-primary);"></i> <strong>Vector Owner (%%For) / EXIF Artist:</strong> <code>${escapeHtml(nameVal)}</code></div>
+                <div><i class='bx bx-image' style="color: var(--accent-primary);"></i> <strong>Raster (JPG/PNG/WebP):</strong> <code>${escapeHtml(psMeta.softwareStr)}</code> on <code>${escapeHtml(osVal)}</code></div>
+                <div><i class='bx bx-vector' style="color: var(--accent-secondary);"></i> <strong>Vector DSC &amp; Build:</strong> <code>${escapeHtml(aiMeta.dscCreator)}</code> • <code>v${escapeHtml(aiMeta.fullVer)}</code></div>
+                <div><i class='bx bx-code-alt' style="color: var(--accent-secondary);"></i> <strong>Vector XMP CreatorTool:</strong> <code>${escapeHtml(aiMeta.xmpCreatorTool)}</code></div>
             </div>
         `;
     }
@@ -754,6 +883,8 @@ window.getCustomProfile = function(profileKey) {
 
 window.getSoftwareString = getSoftwareString;
 window.getIllustratorMajorVersion = getIllustratorMajorVersion;
+window.getIllustratorAuthenticMeta = getIllustratorAuthenticMeta;
+window.getPhotoshopAuthenticMeta = getPhotoshopAuthenticMeta;
 
 // Initialize on Load
 (function init() {

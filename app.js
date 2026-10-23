@@ -758,6 +758,64 @@ function stripJpegC2pa(arrayBuffer) {
     return output.buffer;
 }
 
+// Helper: Spoof XMP string with authentic Adobe CreatorTool, xmptk, softwareAgent, and pdf:Producer while removing Topaz/AI upscalers
+function spoofXmpStringWithAdobeMeta(xmpStr, creatorTool, xmptk, pdfProducer, ownerName) {
+    if (!xmpStr) return xmpStr;
+
+    // 1. Remove Topaz / Gigapixel / AI upscaler references
+    let updated = xmpStr.replace(/<(?:topaz|Topaz):[^>]*>[\s\S]*?<\/(?:topaz|Topaz):[^>]*>/gi, '');
+    updated = updated.replace(/<(?:topaz|Topaz):[^>]*\/>/gi, '');
+    updated = updated.replace(/Topaz[^\r\n<"']*/gi, '');
+    updated = updated.replace(/Gigapixel[^\r\n<"']*/gi, '');
+
+    // 2. Update x:xmptk attribute on <x:xmpmeta>
+    if (xmptk) {
+        if (/x:xmptk\s*=\s*["'][^"']*["']/i.test(updated)) {
+            updated = updated.replace(/x:xmptk\s*=\s*["'][^"']*["']/i, `x:xmptk="${xmptk}"`);
+        } else {
+            updated = updated.replace(/<x:xmpmeta\b/i, `<x:xmpmeta x:xmptk="${xmptk}"`);
+        }
+    }
+
+    // 3. Update CreatorTool (both element and attribute forms)
+    if (creatorTool) {
+        let foundCreatorTool = false;
+        if (/<xmp:CreatorTool>[\s\S]*?<\/xmp:CreatorTool>/i.test(updated)) {
+            updated = updated.replace(/<xmp:CreatorTool>[\s\S]*?<\/xmp:CreatorTool>/gi, `<xmp:CreatorTool>${creatorTool}</xmp:CreatorTool>`);
+            foundCreatorTool = true;
+        }
+        if (/xmp:CreatorTool\s*=\s*["'][^"']*["']/i.test(updated)) {
+            updated = updated.replace(/xmp:CreatorTool\s*=\s*["'][^"']*["']/gi, `xmp:CreatorTool="${creatorTool}"`);
+            foundCreatorTool = true;
+        }
+        if (!foundCreatorTool) {
+            updated = updated.replace(/(<rdf:Description\b[^>]*>)/i, `$1\n         <xmp:CreatorTool>${creatorTool}</xmp:CreatorTool>`);
+        }
+
+        // 4. Update stEvt:softwareAgent in xmpMM:History (both element and attribute forms)
+        updated = updated.replace(/<stEvt:softwareAgent>[\s\S]*?<\/stEvt:softwareAgent>/gi, `<stEvt:softwareAgent>${creatorTool}</stEvt:softwareAgent>`);
+        updated = updated.replace(/stEvt:softwareAgent\s*=\s*["'][^"']*["']/gi, `stEvt:softwareAgent="${creatorTool}"`);
+
+        // 5. Update tiff:Software if present
+        updated = updated.replace(/<tiff:Software>[\s\S]*?<\/tiff:Software>/gi, `<tiff:Software>${creatorTool}</tiff:Software>`);
+        updated = updated.replace(/tiff:Software\s*=\s*["'][^"']*["']/gi, `tiff:Software="${creatorTool}"`);
+    }
+
+    // 6. Update pdf:Producer if provided and present
+    if (pdfProducer) {
+        updated = updated.replace(/<pdf:Producer>[\s\S]*?<\/pdf:Producer>/gi, `<pdf:Producer>${pdfProducer}</pdf:Producer>`);
+        updated = updated.replace(/pdf:Producer\s*=\s*["'][^"']*["']/gi, `pdf:Producer="${pdfProducer}"`);
+    }
+
+    // 7. Update existing dc:creator if present and ownerName is provided
+    if (ownerName && /<dc:creator>[\s\S]*?<\/dc:creator>/i.test(updated)) {
+        const safeOwner = ownerName.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        updated = updated.replace(/(<dc:creator>[\s\S]*?<rdf:li>)[\s\S]*?(<\/rdf:li>[\s\S]*?<\/dc:creator>)/i, `$1${safeOwner}$2`);
+    }
+
+    return updated;
+}
+
 // Helper: Clean XMP string in-place or via XML to remove software/creatorTool/topaz references while preserving title, keywords, copyright
 function cleanXmpStringPreservingStock(xmpStr) {
     if (!xmpStr) return xmpStr;
@@ -780,8 +838,8 @@ function cleanXmpStringPreservingStock(xmpStr) {
     return cleaned;
 }
 
-// Clean JPEG XMP APP1 segment bytes while preserving exact byte length
-function cleanXmpSegmentBytesPreservingStock(segBytes) {
+// Clean or Spoof JPEG XMP APP1 segment bytes
+function cleanXmpSegmentBytesPreservingStock(segBytes, spoofMeta = null) {
     // segBytes includes: [0xFF, 0xE1, len_hi, len_lo, ...payload...]
     const segLen = segBytes.length;
     const headerPrefix = 'http://ns.adobe.com/xap/1.0/\0';
@@ -792,8 +850,10 @@ function cleanXmpSegmentBytesPreservingStock(segBytes) {
     const decoder = new TextDecoder('utf-8', { fatal: false });
     const xmlStr = decoder.decode(xmlBytes);
 
-    const cleanedXmlStr = cleanXmpStringPreservingStock(xmlStr);
-    const encodedCleaned = new TextEncoder().encode(cleanedXmlStr);
+    const updatedXmlStr = spoofMeta
+        ? spoofXmpStringWithAdobeMeta(xmlStr, spoofMeta.creatorTool, spoofMeta.xmptk, null, spoofMeta.ownerName)
+        : cleanXmpStringPreservingStock(xmlStr);
+    const encodedCleaned = new TextEncoder().encode(updatedXmlStr);
 
     if (encodedCleaned.length <= xmlBytes.length) {
         // Pad the remainder with spaces (0x20) so the segment length stays 100% identical!
@@ -803,16 +863,55 @@ function cleanXmpSegmentBytesPreservingStock(segBytes) {
             result[i] = 0x20; // ASCII space padding
         }
         return result;
+    } else if (spoofMeta && (headerPrefix.length + encodedCleaned.length + 2) <= 65535) {
+        // Rebuild APP1 segment with updated 2-byte big-endian length
+        const newPayloadLen = 2 + headerPrefix.length + encodedCleaned.length;
+        const result = new Uint8Array(2 + newPayloadLen);
+        result[0] = 0xFF;
+        result[1] = 0xE1;
+        result[2] = (newPayloadLen >> 8) & 0xFF;
+        result[3] = newPayloadLen & 0xFF;
+        for (let i = 0; i < headerPrefix.length; i++) {
+            result[4 + i] = headerPrefix.charCodeAt(i);
+        }
+        result.set(encodedCleaned, 4 + headerPrefix.length);
+        return result;
     }
 
     // Fallback: return original if encoded length exceeded
     return segBytes;
 }
 
-// Stock Safe JPEG cleaner:
+// Build a fresh authentic Adobe Photoshop XMP APP1 segment for JPEGs that lacked XMP
+function buildAuthenticJpegXmpSegment(creatorTool, xmptk) {
+    const iid = generateXmpUUID();
+    const did = generateXmpUUID();
+    const origDid = generateXmpUUID();
+    const now = new Date();
+    const isoDate = now.toISOString().replace(/\.\d{3}Z$/, '+06:00');
+    const tk = xmptk || "Adobe XMP Core 9.1-c002 79.f3a8c9b, 2024/03/12-14:22:10        ";
+
+    const xmpStr = `<?xpacket begin="\uFEFF" id="W5M0MpCehiHzreSzNTczkc9d"?>\n<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="${tk}">\n   <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">\n      <rdf:Description rdf:about=""\n            xmlns:xmp="http://ns.adobe.com/xap/1.0/"\n            xmlns:dc="http://purl.org/dc/elements/1.1/"\n            xmlns:photoshop="http://ns.adobe.com/photoshop/1.0/"\n            xmlns:xmpMM="http://ns.adobe.com/xap/1.0/mm/"\n            xmlns:stEvt="http://ns.adobe.com/xap/1.0/sType/ResourceEvent#"\n            xmp:CreatorTool="${creatorTool}"\n            xmp:CreateDate="${isoDate}"\n            xmp:ModifyDate="${isoDate}"\n            xmp:MetadataDate="${isoDate}"\n            dc:format="image/jpeg"\n            photoshop:ColorMode="3"\n            photoshop:ICCProfile="sRGB IEC61966-2.1"\n            xmpMM:InstanceID="xmp.iid:${iid}"\n            xmpMM:DocumentID="adobe:docid:photoshop:${did}"\n            xmpMM:OriginalDocumentID="xmp.did:${origDid}">\n         <xmpMM:History>\n            <rdf:Seq>\n               <rdf:li\n                  stEvt:action="created"\n                  stEvt:instanceID="xmp.iid:${origDid}"\n                  stEvt:when="${isoDate}"\n                  stEvt:softwareAgent="${creatorTool}"/>\n               <rdf:li\n                  stEvt:action="saved"\n                  stEvt:instanceID="xmp.iid:${iid}"\n                  stEvt:when="${isoDate}"\n                  stEvt:softwareAgent="${creatorTool}"\n                  stEvt:changed="/"/>\n            </rdf:Seq>\n         </xmpMM:History>\n      </rdf:Description>\n   </rdf:RDF>\n</x:xmpmeta>\n<?xpacket end="w"?>`;
+
+    const headerPrefix = 'http://ns.adobe.com/xap/1.0/\0';
+    const xmpBytes = new TextEncoder().encode(xmpStr);
+    const payloadLen = 2 + headerPrefix.length + xmpBytes.length;
+    const seg = new Uint8Array(2 + payloadLen);
+    seg[0] = 0xFF;
+    seg[1] = 0xE1;
+    seg[2] = (payloadLen >> 8) & 0xFF;
+    seg[3] = payloadLen & 0xFF;
+    for (let i = 0; i < headerPrefix.length; i++) {
+        seg[4 + i] = headerPrefix.charCodeAt(i);
+    }
+    seg.set(xmpBytes, 4 + headerPrefix.length);
+    return seg;
+}
+
+// Stock Safe / Profile JPEG cleaner:
 // Keeps APP1 (XMP) and APP13 (Photoshop IPTC containing title, keywords, copyright)
-// Strips APP11 (C2PA) and removes GPS / camera private tags and Software/CreatorTool from EXIF and XMP
-function stripJpegForStockSafe(arrayBuffer) {
+// Strips APP11 (C2PA) and removes GPS / camera private tags
+function stripJpegForStockSafe(arrayBuffer, spoofMeta = null) {
     if (!arrayBuffer || arrayBuffer.byteLength < 4) return arrayBuffer;
     let uint8 = new Uint8Array(arrayBuffer);
     if (uint8[0] !== 0xFF || uint8[1] !== 0xD8) return arrayBuffer;
@@ -855,10 +954,11 @@ function stripJpegForStockSafe(arrayBuffer) {
         console.warn("piexif EXIF clean warning:", e);
     }
 
-    // Pass 2: Strip C2PA APP11 markers and clean XMP in-place
+    // Pass 2: Strip C2PA APP11 markers and clean/spoof XMP in-place
     const chunks = [];
     chunks.push({ start: 0, end: 2 }); // SOI
     const xmpPrefix = 'http://ns.adobe.com/xap/1.0/\0';
+    let foundXmpSegment = false;
 
     let offset = 2;
     while (offset < uint8.length - 4) {
@@ -873,6 +973,10 @@ function stripJpegForStockSafe(arrayBuffer) {
 
         const marker = uint8[offset++];
         if (marker === 0xDA) { // SOS
+            if (spoofMeta && !foundXmpSegment) {
+                chunks.push({ customBytes: buildAuthenticJpegXmpSegment(spoofMeta.creatorTool, spoofMeta.xmptk) });
+                foundXmpSegment = true;
+            }
             chunks.push({ start: markerStart, end: uint8.length });
             break;
         }
@@ -899,14 +1003,15 @@ function stripJpegForStockSafe(arrayBuffer) {
             continue;
         }
 
-        // Clean XMP APP1 in-place (removes CreatorTool / Topaz, preserves Title / Keywords / Copyright)
+        // Clean or Spoof XMP APP1 in-place (preserves Title / Keywords / Copyright)
         if (marker === 0xE1) {
             const segDataOffset = offset + 2;
             const headerStr = String.fromCharCode.apply(null, uint8.subarray(segDataOffset, Math.min(segDataOffset + 32, segEnd)));
             if (headerStr.startsWith(xmpPrefix)) {
+                foundXmpSegment = true;
                 try {
                     const segBytes = uint8.slice(markerStart, segEnd);
-                    const cleanedSegBytes = cleanXmpSegmentBytesPreservingStock(segBytes);
+                    const cleanedSegBytes = cleanXmpSegmentBytesPreservingStock(segBytes, spoofMeta);
                     chunks.push({ customBytes: cleanedSegBytes });
                     offset = segEnd;
                     continue;
@@ -942,7 +1047,7 @@ function stripJpegForStockSafe(arrayBuffer) {
 }
 
 // Strip caBX chunk from PNG ArrayBuffer
-function stripPngC2pa(arrayBuffer) {
+function stripPngC2pa(arrayBuffer, removeExistingXmp = false) {
     const uint8 = new Uint8Array(arrayBuffer);
     if (uint8.length < 8) return arrayBuffer;
 
@@ -967,7 +1072,7 @@ function stripPngC2pa(arrayBuffer) {
             const nullIdx = chunkData.indexOf(0);
             if (nullIdx !== -1) {
                 const keyword = new TextDecoder('latin1').decode(chunkData.subarray(0, nullIdx));
-                if (['Software', 'Creator', 'Comment', 'Source'].includes(keyword)) {
+                if (['Software', 'Creator', 'Author', 'Comment', 'Source'].includes(keyword)) {
                     offset = chunkEnd;
                     continue;
                 }
@@ -978,12 +1083,16 @@ function stripPngC2pa(arrayBuffer) {
             const chunkData = uint8.subarray(offset + 8, chunkEnd - 4);
             const nullIdx = chunkData.indexOf(0);
             const keyword = nullIdx !== -1 ? new TextDecoder('latin1').decode(chunkData.subarray(0, nullIdx)) : '';
-            if (keyword.startsWith('c2pa') || keyword.startsWith('caBX') || keyword === 'Software') {
+            if (keyword.startsWith('c2pa') || keyword.startsWith('caBX') || keyword === 'Software' || keyword === 'Author') {
                 offset = chunkEnd;
                 continue;
             }
-            // If iTXt contains XMP (keyword XML:com.adobe.xmp), clean Software/CreatorTool from XMP
+            // If iTXt contains XMP (keyword XML:com.adobe.xmp), either remove (if re-injecting custom profile XMP) or clean Software/CreatorTool
             if (keyword === 'XML:com.adobe.xmp') {
+                if (removeExistingXmp) {
+                    offset = chunkEnd;
+                    continue;
+                }
                 try {
                     let pos = nullIdx + 1;
                     const isCompressed = chunkData[pos] === 1;
@@ -1663,8 +1772,8 @@ function cleanSvgFile(svgText, mode) {
             svg.removeAttribute('xmlns:rdf');
             svg.removeAttribute('xmlns:dc');
             svg.removeAttribute('xmlns:cc');
-        } else if (mode === 'STOCK') {
-            // STOCK SAFE: Remove only private/editor namespaces (Inkscape/Sodipodi/Sketch),
+        } else if (mode === 'STOCK' || mode === 'CUSTOM') {
+            // STOCK SAFE / CUSTOM PROFILE: Remove only private/editor namespaces (Inkscape/Sodipodi/Sketch),
             // but KEEP <title>, <desc>, and Dublin Core stock tags
             const attrsToRemove = [];
             for (const attr of svg.attributes) {
@@ -1811,9 +1920,33 @@ function extractEpsMetadata(arrayBuffer) {
     if (pdfProducerMatch) {
         metadata['PDF Producer'] = pdfProducerMatch[1].trim();
     }
-    const aiCreatorVerMatch = headerText.match(/%AI\d+_CreatorVersion:\s*([^\r\n]+)/);
+    const aiCreatorVerMatch = headerText.match(/%+AI\d+_CreatorVersion:\s*([^\r\n]+)/);
     if (aiCreatorVerMatch) {
         metadata['AI Creator Version'] = aiCreatorVerMatch[1].trim();
+    }
+    const adoBuildMatch = headerText.match(/^%ADO_BuildNumber:\s*([^\r\n]+)/m);
+    if (adoBuildMatch) {
+        metadata['ADO Build Number'] = adoBuildMatch[1].trim();
+    }
+
+    // Check %AI9_PrivateDataBegin block near the end of the PostScript stream
+    const psMaxEnd = (dosInfo.isDosEps && dosInfo.psLength > 0)
+        ? Math.min(uint8.length, headerStart + dosInfo.psLength)
+        : uint8.length;
+    const privIdx = indexOfAsciiBytes(uint8, '%AI9_PrivateDataBegin', headerStart, psMaxEnd);
+    if (privIdx !== -1) {
+        const privSliceText = uint8ToBinaryString(uint8, privIdx, Math.min(psMaxEnd, privIdx + 512));
+        const privVerMatch = privSliceText.match(/%+AI8_CreatorVersion:\s*([^\r\n]+)/);
+        if (privVerMatch) {
+            metadata['Private Data Version'] = privVerMatch[1].trim();
+        }
+        const privForMatch = privSliceText.match(/^%%For:\s*([^\r\n]+)/m);
+        if (privForMatch) {
+            const val = privForMatch[1].trim();
+            if (val && !/^\(\s*\)\s*\(\s*\)$/.test(val)) {
+                metadata['Private Data Author'] = val;
+            }
+        }
     }
 
     // 3. AI-specific structural info (read-only informational)
@@ -1907,9 +2040,9 @@ function cleanEpsBuffer(arrayBuffer, mode) {
             '%AI3_Timing:'
         ];
     } else if (mode === 'STOCK') {
+        // In STOCK mode, preserve %%CreationDate: and %%Creator: so the EPS header remains authentic
         targetPrefixes = [
             '%%For:',
-            '%%CreationDate:',
             '%%Routing:',
             '%AI5_DirectBurn:',
             '%AI3_Timing:'
@@ -1955,6 +2088,29 @@ function cleanEpsBuffer(arrayBuffer, mode) {
         pos = lineEnd;
         while (pos < headerScanLimit && (output[pos] === 0x0A || output[pos] === 0x0D)) {
             pos++;
+        }
+    }
+
+    // 1b. Also clean %%For: inside %AI9_PrivateDataBegin near the end of the PostScript stream
+    const privStart = indexOfAsciiBytes(output, '%AI9_PrivateDataBegin', psStart, psMaxEnd);
+    if (privStart !== -1) {
+        const privScanLimit = Math.min(psMaxEnd, privStart + 512);
+        const privForIdx = indexOfAsciiBytes(output, '%%For:', privStart, privScanLimit);
+        if (privForIdx !== -1) {
+            let lineEnd = privForIdx;
+            while (lineEnd < privScanLimit && output[lineEnd] !== 0x0A && output[lineEnd] !== 0x0D) {
+                lineEnd++;
+            }
+            const valStart = privForIdx + 6; // after '%%For:'
+            const emptyFor = ' () ()';
+            if (lineEnd - valStart >= emptyFor.length) {
+                for (let i = 0; i < emptyFor.length; i++) {
+                    output[valStart + i] = emptyFor.charCodeAt(i);
+                }
+                for (let i = valStart + emptyFor.length; i < lineEnd; i++) {
+                    output[i] = 0x20;
+                }
+            }
         }
     }
 
@@ -2435,10 +2591,14 @@ async function processImage(fileObj, mode) {
         const psVersion = prof ? (prof.psVersion || prof.version || "2024") : "2024";
         const osStr = prof ? (prof.os || "Windows 11") : "Windows 11";
         const ownerName = prof ? (prof.name || "").trim() : "";
-        let softwareStr = "Adobe Photoshop 25.0 (Windows)";
-        if (window.getSoftwareString) {
-            softwareStr = window.getSoftwareString("Photoshop", psVersion);
-        }
+        const psMeta = window.getPhotoshopAuthenticMeta
+            ? window.getPhotoshopAuthenticMeta(psVersion)
+            : {
+                softwareStr: window.getSoftwareString ? window.getSoftwareString("Photoshop", psVersion) : "Adobe Photoshop 25.9 (Windows)",
+                xmptk: "Adobe XMP Core 9.1-c002 79.f3a8c9b, 2024/03/12-14:22:10        "
+            };
+        const softwareStr = psMeta.softwareStr;
+        const xmptk = psMeta.xmptk;
 
         const ext = getFileExtension(fileObj.name);
         const isJpeg = fileObj.type === 'image/jpeg' || fileObj.type === 'image/jpg' || ext === 'jpg' || ext === 'jpeg';
@@ -2447,8 +2607,12 @@ async function processImage(fileObj, mode) {
 
         if (isJpeg) {
             try {
-                // Stock Safe clean first to preserve user Title & Keywords while wiping GPS, camera serials, and C2PA
-                const strippedBuf = stripJpegForStockSafe(fileObj.originalArrayBuffer);
+                // Clean private EXIF & C2PA while spoofing or injecting authentic Photoshop XMP APP1 packet
+                const strippedBuf = stripJpegForStockSafe(fileObj.originalArrayBuffer, {
+                    creatorTool: softwareStr,
+                    xmptk: xmptk,
+                    ownerName: ownerName
+                });
                 const fullStr = uint8ToBinaryString(new Uint8Array(strippedBuf));
                 let exifObj = {};
                 try {
@@ -2484,8 +2648,8 @@ async function processImage(fileObj, mode) {
             }
         } else if (isPng) {
             try {
-                // Stock Safe clean first
-                const strippedBuf = stripPngC2pa(fileObj.originalArrayBuffer);
+                // Strip C2PA and remove old Software/Author/XMP chunks before injecting fresh authentic chunks
+                const strippedBuf = stripPngC2pa(fileObj.originalArrayBuffer, true);
                 let currentDataURL = await injectPngTextChunk(strippedBuf, "Software", softwareStr);
                 if (ownerName) {
                     const resAuthor = await fetch(currentDataURL);
@@ -2494,7 +2658,7 @@ async function processImage(fileObj, mode) {
                 }
                 const res = await fetch(currentDataURL);
                 const buf = await res.arrayBuffer();
-                finalDataURL = await injectPngXmpChunk(buf, softwareStr, osStr);
+                finalDataURL = await injectPngXmpChunk(buf, softwareStr, osStr, xmptk);
             } catch (e) {
                 console.error("Custom profile PNG spoof error:", e);
                 let cleanDataURL = await cleanViaCanvas(fileObj);
@@ -2508,7 +2672,7 @@ async function processImage(fileObj, mode) {
                 }
                 const res2 = await fetch(currentDataURL);
                 const buf2 = await res2.arrayBuffer();
-                finalDataURL = await injectPngXmpChunk(buf2, softwareStr, osStr);
+                finalDataURL = await injectPngXmpChunk(buf2, softwareStr, osStr, xmptk);
             }
         } else if (isWebp) {
             try {
@@ -2587,7 +2751,7 @@ function generateXmpUUID() {
     return id;
 }
 
-async function injectPngXmpChunk(arrayBuffer, softwareStr, osStr) {
+async function injectPngXmpChunk(arrayBuffer, softwareStr, osStr, customXmptk = null) {
     const uint8 = new Uint8Array(arrayBuffer);
     
     // Generate realistic Photoshop XMP UUIDs
@@ -2599,10 +2763,11 @@ async function injectPngXmpChunk(arrayBuffer, softwareStr, osStr) {
     // Create a realistic date string
     const now = new Date();
     const isoDate = now.toISOString().replace(/\.\d{3}Z$/, '+06:00');
+    const tk = customXmptk || "Adobe XMP Core 9.1-c002 79.f3a8c9b, 2024/03/12-14:22:10        ";
     
     // Build XMP packet that looks like real Photoshop output
     const xmpStr = `<?xpacket begin="\uFEFF" id="W5M0MpCehiHzreSzNTczkc9d"?>
-<x:xmpmeta xmlns:x="adobe:ns:meta/">
+<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="${tk}">
  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
   <rdf:Description rdf:about=""
     xmlns:xmp="http://ns.adobe.com/xap/1.0/"
@@ -2617,7 +2782,7 @@ async function injectPngXmpChunk(arrayBuffer, softwareStr, osStr) {
    xmp:MetadataDate="${isoDate}"
    dc:format="image/png"
    xmpMM:InstanceID="xmp.iid:${iid}"
-   xmpMM:DocumentID="xmp.did:${did}"
+   xmpMM:DocumentID="adobe:docid:photoshop:${did}"
    xmpMM:OriginalDocumentID="xmp.did:${origDid}"
    photoshop:ColorMode="3"
    photoshop:ICCProfile="sRGB IEC61966-2.1">
@@ -2712,67 +2877,342 @@ async function processVideo(fileObj, mode) {
     return new Blob([cleanedBuffer], { type: fileObj.type || 'video/mp4' });
 }
 
-function getIllustratorMajorVersion(versionYear) {
-    if (window.getIllustratorMajorVersion) return window.getIllustratorMajorVersion(versionYear);
+function getLocalIllustratorAuthenticMeta(versionYear) {
+    if (window.getIllustratorAuthenticMeta) return window.getIllustratorAuthenticMeta(versionYear);
     const v = String(versionYear || "2024").trim();
     const map = {
-        "2015": "19", "2016": "20", "2017": "21", "2018": "22", "2019": "23",
-        "2020": "24", "2021": "25", "2022": "26", "2023": "27", "2024": "28",
-        "2025": "29", "2026": "30"
+        "2026": {
+            shortVer: "30.4", fullVer: "30.4.0",
+            dscCreator: "Adobe Illustrator(R) 30.4",
+            xmpCreatorTool: "Adobe Illustrator 30.4 (Windows)",
+            buildNumber: "Adobe Illustrator(R) 30.4.0 x226 R agm 8.0 ct 11.7",
+            xmptk: "Adobe XMP Core 10.0-c000 1.000000, 0000/00/00-00:00:00        ",
+            pdfProducer: "Adobe PDF library 18.00"
+        },
+        "2025": {
+            shortVer: "29.5", fullVer: "29.5.0",
+            dscCreator: "Adobe Illustrator(R) 29.5",
+            xmpCreatorTool: "Adobe Illustrator 29.5 (Windows)",
+            buildNumber: "Adobe Illustrator(R) 29.5.0 x134 R agm 7.1 ct 11.5",
+            xmptk: "Adobe XMP Core 9.1-c002 79.a1cd12f, 2024/11/15-19:08:22        ",
+            pdfProducer: "Adobe PDF library 17.00"
+        },
+        "2024": {
+            shortVer: "28.5", fullVer: "28.5.0",
+            dscCreator: "Adobe Illustrator(R) 28.5",
+            xmpCreatorTool: "Adobe Illustrator 28.5 (Windows)",
+            buildNumber: "Adobe Illustrator(R) 28.5.0 x132 R agm 7.0 ct 11.4",
+            xmptk: "Adobe XMP Core 9.1-c001 79.675d0f7, 2023/06/11-19:21:16        ",
+            pdfProducer: "Adobe PDF library 17.00"
+        },
+        "2023": {
+            shortVer: "27.9", fullVer: "27.9.0",
+            dscCreator: "Adobe Illustrator(R) 27.9",
+            xmpCreatorTool: "Adobe Illustrator 27.9 (Windows)",
+            buildNumber: "Adobe Illustrator(R) 27.9.0 x80 R agm 5.1 ct 11.2",
+            xmptk: "Adobe XMP Core 9.0-c001 79.14ecb42, 2022/12/02-19:12:44        ",
+            pdfProducer: "Adobe PDF library 17.00"
+        },
+        "2022": {
+            shortVer: "26.5", fullVer: "26.5.0",
+            dscCreator: "Adobe Illustrator(R) 26.5",
+            xmpCreatorTool: "Adobe Illustrator 26.5 (Windows)",
+            buildNumber: "Adobe Illustrator(R) 26.5.0 x22 R agm 5.0 ct 11.0",
+            xmptk: "Adobe XMP Core 7.1-c000 79.b0f8be9, 2021/12/08-19:11:22        ",
+            pdfProducer: "Adobe PDF library 16.03"
+        },
+        "2021": {
+            shortVer: "25.4", fullVer: "25.4.1",
+            dscCreator: "Adobe Illustrator(R) 25.4",
+            xmpCreatorTool: "Adobe Illustrator 25.4 (Windows)",
+            buildNumber: "Adobe Illustrator(R) 25.4.1 x498 R agm 4.85 ct 5.75",
+            xmptk: "Adobe XMP Core 7.0-c000 79.dabacbb, 2021/04/14-00:39:44        ",
+            pdfProducer: "Adobe PDF library 15.00"
+        },
+        "2020": {
+            shortVer: "24.3", fullVer: "24.3.0",
+            dscCreator: "Adobe Illustrator(R) 24.3",
+            xmpCreatorTool: "Adobe Illustrator 24.3 (Windows)",
+            buildNumber: "Adobe Illustrator(R) 24.3.0 x569 R agm 4.7767 ct 5.4352",
+            xmptk: "Adobe XMP Core 6.0-c002 79.164488, 2020/07/10-22:06:53        ",
+            pdfProducer: "Adobe PDF library 15.00"
+        },
+        "2019": {
+            shortVer: "23.1", fullVer: "23.1.0",
+            dscCreator: "Adobe Illustrator(R) 23.1",
+            xmpCreatorTool: "Adobe Illustrator CC 23.1 (Windows)",
+            buildNumber: "Adobe Illustrator(R) 23.1.0 x670 R agm 4.72 ct 5.30",
+            xmptk: "Adobe XMP Core 5.6-c145 79.163499, 2018/08/13-16:40:22        ",
+            pdfProducer: "Adobe PDF library 15.00"
+        },
+        "2018": {
+            shortVer: "22.1", fullVer: "22.1.0",
+            dscCreator: "Adobe Illustrator(R) 22.1",
+            xmpCreatorTool: "Adobe Illustrator CC 22.1 (Windows)",
+            buildNumber: "Adobe Illustrator(R) 22.1.0 x312 R agm 4.67 ct 5.20",
+            xmptk: "Adobe XMP Core 5.6-c143 79.161356, 2017/09/07-01:11:22        ",
+            pdfProducer: "Adobe PDF library 15.00"
+        },
+        "2017": {
+            shortVer: "21.1", fullVer: "21.1.0",
+            dscCreator: "Adobe Illustrator(R) 21.1",
+            xmpCreatorTool: "Adobe Illustrator CC 2017 (Windows)",
+            buildNumber: "Adobe Illustrator(R) 21.1.0 x326 R agm 4.62 ct 5.10",
+            xmptk: "Adobe XMP Core 5.6-c137 79.159768, 2016/08/11-13:24:42        ",
+            pdfProducer: "Adobe PDF library 15.00"
+        },
+        "2016": {
+            shortVer: "20.1", fullVer: "20.1.0",
+            dscCreator: "Adobe Illustrator(R) 20.1",
+            xmpCreatorTool: "Adobe Illustrator CC 2015.3 (Windows)",
+            buildNumber: "Adobe Illustrator(R) 20.1.0 x174 R agm 4.58 ct 5.02",
+            xmptk: "Adobe XMP Core 5.6-c132 79.159284, 2016/04/19-13:13:40        ",
+            pdfProducer: "Adobe PDF library 15.00"
+        },
+        "2015": {
+            shortVer: "19.2", fullVer: "19.2.1",
+            dscCreator: "Adobe Illustrator(R) 19.2",
+            xmpCreatorTool: "Adobe Illustrator CC 2015 (Windows)",
+            buildNumber: "Adobe Illustrator(R) 19.2.1 x147 R agm 4.55 ct 5.00",
+            xmptk: "Adobe XMP Core 5.6-c067 79.157747, 2015/03/30-23:40:42        ",
+            pdfProducer: "Adobe PDF library 15.00"
+        }
     };
-    return map[v] || "28";
+    return map[v] || map["2024"];
 }
 
-function injectEpsCreatorAndForString(arrayBuffer, softwareStr, ownerName, aiVersion) {
-    if (!arrayBuffer || arrayBuffer.byteLength < 16) return arrayBuffer;
-    const uint8 = new Uint8Array(arrayBuffer.slice(0));
-    const majorVer = getIllustratorMajorVersion(aiVersion);
+function binaryStringToUint8(str) {
+    const out = new Uint8Array(str.length);
+    for (let i = 0; i < str.length; i++) {
+        out[i] = str.charCodeAt(i) & 0xFF;
+    }
+    return out;
+}
 
-    // 1. Standard PostScript EPS Header: %%Creator:
-    if (softwareStr) {
-        const prefix = '%%Creator:';
-        const idx = indexOfAsciiBytes(uint8, prefix, 0, Math.min(uint8.length, 131072));
-        if (idx !== -1) {
-            let lineEnd = idx;
-            while (lineEnd < uint8.length && uint8[lineEnd] !== 0x0A && uint8[lineEnd] !== 0x0D) {
-                lineEnd++;
-            }
-            const valStart = idx + prefix.length;
-            const availableSpace = lineEnd - valStart;
+// Helper: Spoof all embedded XMP packets inside a Uint8Array in-place with 0-byte offset shift
+// Absorbs any length delta into the standard Adobe XMP whitespace padding block before <?xpacket end="w"?>
+function spoofXmpInUint8Buffer(uint8, xmpTool, xmptk, pdfProducer, ownerName) {
+    const openTag = '<x:xmpmeta';
+    const closeTag = '</x:xmpmeta>';
+    const xpacketEndTag = '<?xpacket end=';
 
-            const candidates = [
-                ' ' + softwareStr,
-                ' ' + softwareStr.replace(/\s*\(Windows\)/i, ''),
-                ` Adobe Illustrator ${majorVer}.0`,
-                ` Illustrator ${majorVer}.0 (Win)`,
-                ` Illustrator ${majorVer}.0`,
-                ` AI ${majorVer}.0`
-            ];
+    let searchFrom = 0;
+    while (searchFrom < uint8.length) {
+        const xmpStart = indexOfAsciiBytes(uint8, openTag, searchFrom, uint8.length);
+        if (xmpStart === -1) break;
 
-            let chosenCandidate = null;
-            for (const cand of candidates) {
-                const enc = new TextEncoder().encode(cand);
-                if (enc.length <= availableSpace) {
-                    chosenCandidate = cand;
+        const closePos = indexOfAsciiBytes(uint8, closeTag, xmpStart, uint8.length);
+        if (closePos === -1) break;
+
+        const xmpXmlEnd = closePos + closeTag.length;
+
+        // Check if standard Adobe whitespace padding + <?xpacket end= follows </x:xmpmeta>
+        const xpacketPos = indexOfAsciiBytes(uint8, xpacketEndTag, xmpXmlEnd, Math.min(uint8.length, xmpXmlEnd + 4096));
+        let regionEnd = xmpXmlEnd;
+        let hasPaddingBlock = false;
+        if (xpacketPos !== -1) {
+            let allWs = true;
+            for (let i = xmpXmlEnd; i < xpacketPos; i++) {
+                const b = uint8[i];
+                if (b !== 0x20 && b !== 0x0A && b !== 0x0D && b !== 0x09) {
+                    allWs = false;
                     break;
                 }
             }
-
-            if (!chosenCandidate && availableSpace > 5) {
-                chosenCandidate = (' ' + softwareStr).substring(0, availableSpace);
-            }
-
-            if (chosenCandidate) {
-                const encoded = new TextEncoder().encode(chosenCandidate);
-                uint8.set(encoded, valStart);
-                for (let i = valStart + encoded.length; i < lineEnd; i++) {
-                    uint8[i] = 0x20; // pad remainder with spaces so byte count never changes
-                }
+            if (allWs) {
+                regionEnd = xpacketPos;
+                hasPaddingBlock = true;
             }
         }
+
+        const totalRegionLen = regionEnd - xmpStart;
+
+        try {
+            const rawXml = new TextDecoder('utf-8', { fatal: false }).decode(uint8.subarray(xmpStart, xmpXmlEnd));
+            const updatedXml = spoofXmpStringWithAdobeMeta(rawXml, xmpTool, xmptk, pdfProducer, ownerName);
+            const encodedXml = new TextEncoder().encode(updatedXml);
+
+            if (encodedXml.length <= totalRegionLen) {
+                uint8.set(encodedXml, xmpStart);
+                const padStart = xmpStart + encodedXml.length;
+                const padLen = regionEnd - padStart;
+
+                if (padLen > 0) {
+                    if (hasPaddingBlock) {
+                        // Format padding identically to Adobe XMP Core: \n followed by 100-space lines separated by \n, ending with \n
+                        uint8[padStart] = 0x0A; // '\n' right after </x:xmpmeta>
+                        let col = 0;
+                        for (let p = padStart + 1; p < regionEnd - 1; p++) {
+                            if (col === 100) {
+                                uint8[p] = 0x0A;
+                                col = 0;
+                            } else {
+                                uint8[p] = 0x20;
+                                col++;
+                            }
+                        }
+                        if (padLen >= 2) {
+                            uint8[regionEnd - 1] = 0x0A; // '\n' right before <?xpacket end="w"?>
+                        }
+                    } else {
+                        for (let p = padStart; p < regionEnd; p++) {
+                            uint8[p] = 0x20;
+                        }
+                    }
+                }
+            }
+        } catch (e) {
+            console.warn("EPS/AI XMP spoof warning:", e);
+        }
+
+        searchFrom = regionEnd;
+    }
+}
+
+// Forensically Authentic EPS / AI Metadata Spoofer
+// Updates all 3 sections in real Adobe Illustrator EPS 10 files:
+// 1. Top PostScript DSC Header (%%Creator, %%For, %%AI8_CreatorVersion, %ADO_BuildNumber) with zero trailing space padding
+// 2. Embedded XMP Packet (x:xmptk, xmp:CreatorTool, stEvt:softwareAgent, pdf:Producer) with authentic 100-col padding
+// 3. Bottom %AI9_PrivateDataBegin Header (keeps %%Creator: Adobe Illustrator(R) 10.0, updates %%AI8_CreatorVersion & %%For: (<Name>) ())
+// 4. Updates DOS EPS Binary Header (psLength & tiffOffset) to match exact PostScript byte count
+function spoofEpsBufferAuthentic(arrayBuffer, prof) {
+    if (!arrayBuffer || arrayBuffer.byteLength < 16) return arrayBuffer;
+
+    const aiVersion = prof ? (prof.aiVersion || prof.version || "2024") : "2024";
+    const ownerName = prof ? (prof.name || "").trim() : "";
+    const aiMeta = getLocalIllustratorAuthenticMeta(aiVersion);
+
+    const uint8 = new Uint8Array(arrayBuffer.slice(0));
+    const dosInfo = getDosEpsHeader(uint8);
+
+    const psStart = (dosInfo.isDosEps && dosInfo.psOffset < uint8.length) ? dosInfo.psOffset : 0;
+    const psMaxEnd = (dosInfo.isDosEps && dosInfo.psLength > 0)
+        ? Math.min(uint8.length, psStart + dosInfo.psLength)
+        : uint8.length;
+
+    // Step 1: Update embedded XMP packets in-place (0-byte length delta)
+    spoofXmpInUint8Buffer(uint8, aiMeta.xmpCreatorTool, aiMeta.xmptk, aiMeta.pdfProducer, ownerName);
+
+    const probeText = uint8ToBinaryString(uint8, psStart, Math.min(psMaxEnd, psStart + 2048));
+    const isPostScriptEps = dosInfo.isDosEps || probeText.includes('%!PS-Adobe');
+
+    if (isPostScriptEps) {
+        // Step 2: Update Section 1 (Top PostScript DSC Header) with exact line lengths (zero fake space padding)
+        const topScanLimit = Math.min(psMaxEnd, psStart + 8192);
+        let topHeaderEnd = -1;
+        for (const marker of ['%%BeginData:', '%%BeginProlog', '%%BeginSetup', '%%EndComments']) {
+            const idx = indexOfAsciiBytes(uint8, marker, psStart, topScanLimit);
+            if (idx !== -1 && (topHeaderEnd === -1 || idx < topHeaderEnd)) {
+                topHeaderEnd = idx;
+            }
+        }
+        if (topHeaderEnd === -1) {
+            topHeaderEnd = Math.min(psMaxEnd, psStart + 2048);
+        }
+
+        let topHeaderStr = uint8ToBinaryString(uint8, psStart, topHeaderEnd);
+
+        // Update %%Creator: Adobe Illustrator(R) XX.X
+        topHeaderStr = topHeaderStr.replace(/^%%Creator:[ \t]*[^\r\n]*/m, `%%Creator: ${aiMeta.dscCreator}`);
+
+        // Update or insert %%For: <ownerName> (without parentheses in Top DSC Header!)
+        if (ownerName) {
+            if (/^%%For:[ \t]*[^\r\n]*/m.test(topHeaderStr)) {
+                topHeaderStr = topHeaderStr.replace(/^%%For:[ \t]*[^\r\n]*/m, `%%For: ${ownerName}`);
+            } else {
+                topHeaderStr = topHeaderStr.replace(/^(%%Creator:[ \t]*[^\r\n]*\r?\n)/m, `$1%%For: ${ownerName}\r\n`);
+            }
+        }
+
+        // Update %%AI8_CreatorVersion: XX.X.X
+        topHeaderStr = topHeaderStr.replace(/^(%+AI8_CreatorVersion:)[ \t]*[^\r\n]*/m, `$1 ${aiMeta.fullVer}`);
+
+        // Update %ADO_BuildNumber: Adobe Illustrator(R) XX.X.X ...
+        topHeaderStr = topHeaderStr.replace(/^(%ADO_BuildNumber:)[ \t]*[^\r\n]*/m, `$1 ${aiMeta.buildNumber}`);
+
+        const newTopBytes = binaryStringToUint8(topHeaderStr);
+
+        // Step 3: Update Section 3 (%AI9_PrivateDataBegin near the end of the PostScript stream)
+        const privStart = indexOfAsciiBytes(uint8, '%AI9_PrivateDataBegin', topHeaderEnd, psMaxEnd);
+        let privEnd = -1;
+        let newPrivBytes = null;
+
+        if (privStart !== -1) {
+            const privSearchLimit = Math.min(psMaxEnd, privStart + 2048);
+            privEnd = indexOfAsciiBytes(uint8, '%AI9_DataStream', privStart, privSearchLimit);
+            if (privEnd === -1) {
+                privEnd = indexOfAsciiBytes(uint8, '%%EndData', privStart, privSearchLimit);
+            }
+            if (privEnd !== -1) {
+                let privStr = uint8ToBinaryString(uint8, privStart, privEnd);
+                // Ensure %%Creator inside %AI9_PrivateDataBegin stays Adobe Illustrator(R) 10.0
+                privStr = privStr.replace(/^%%Creator:[ \t]*[^\r\n]*/m, '%%Creator: Adobe Illustrator(R) 10.0');
+                // Update %%AI8_CreatorVersion: XX.X.X
+                privStr = privStr.replace(/^(%+AI8_CreatorVersion:)[ \t]*[^\r\n]*/m, `$1 ${aiMeta.fullVer}`);
+                // Update %%For: (<ownerName>) () (with parentheses and () in %AI9_PrivateDataBegin!)
+                if (ownerName) {
+                    if (/^%%For:[ \t]*[^\r\n]*/m.test(privStr)) {
+                        privStr = privStr.replace(/^%%For:[ \t]*[^\r\n]*/m, `%%For: (${ownerName}) ()`);
+                    } else {
+                        privStr = privStr.replace(/^(%+AI8_CreatorVersion:[ \t]*[^\r\n]*\r?\n)/m, `$1%%For: (${ownerName}) ()\r\n`);
+                    }
+                }
+                newPrivBytes = binaryStringToUint8(privStr);
+            }
+        }
+
+        // Step 4: Reassemble PostScript stream & update DOS EPS 30-byte Binary Header offsets
+        const prefixSlice = uint8.subarray(0, psStart);
+        const suffixSlice = uint8.subarray(psMaxEnd, uint8.length);
+
+        let psChunks;
+        if (privStart !== -1 && privEnd !== -1 && newPrivBytes) {
+            psChunks = [
+                newTopBytes,
+                uint8.subarray(topHeaderEnd, privStart),
+                newPrivBytes,
+                uint8.subarray(privEnd, psMaxEnd)
+            ];
+        } else {
+            psChunks = [
+                newTopBytes,
+                uint8.subarray(topHeaderEnd, psMaxEnd)
+            ];
+        }
+
+        const newPsLength = psChunks.reduce((acc, c) => acc + c.length, 0);
+        const totalOutLen = prefixSlice.length + newPsLength + suffixSlice.length;
+        const outUint8 = new Uint8Array(totalOutLen);
+
+        let writePos = 0;
+        outUint8.set(prefixSlice, writePos);
+        writePos += prefixSlice.length;
+
+        for (const chunk of psChunks) {
+            outUint8.set(chunk, writePos);
+            writePos += chunk.length;
+        }
+
+        outUint8.set(suffixSlice, writePos);
+
+        // Update DOS EPS header pointers (psLength at byte 8, wmfOffset at byte 12, tiffOffset at byte 20)
+        if (dosInfo.isDosEps && outUint8.length >= 30) {
+            const deltaPs = newPsLength - dosInfo.psLength;
+            const outView = new DataView(outUint8.buffer, outUint8.byteOffset, outUint8.byteLength);
+            outView.setUint32(8, newPsLength, true);
+            if (dosInfo.wmfOffset > dosInfo.psOffset) {
+                outView.setUint32(12, dosInfo.wmfOffset + deltaPs, true);
+            }
+            if (dosInfo.tiffOffset > dosInfo.psOffset) {
+                outView.setUint32(20, dosInfo.tiffOffset + deltaPs, true);
+            }
+        }
+
+        return outUint8.buffer;
     }
 
-    // 2. PDF-based AI and PDF Stream Header: /Creator (...)
+    // Fallback for PDF-based .ai files (where xref tables require fixed byte offsets outside XMP)
+    // XMP packet is already updated in-place above; also update in-place /Creator (...) and /Author (...) if present
     const pdfCreatorPrefix = '/Creator';
     const pdfIdx = indexOfAsciiBytes(uint8, pdfCreatorPrefix, 0, Math.min(uint8.length, 131072));
     if (pdfIdx !== -1) {
@@ -2788,93 +3228,24 @@ function injectEpsCreatorAndForString(arrayBuffer, softwareStr, ownerName, aiVer
             if (parenClose < uint8.length && uint8[parenClose] === 0x29) {
                 const valStart = parenOpen + 1;
                 const availableSpace = parenClose - valStart;
-
-                const candidates = [
-                    softwareStr,
-                    softwareStr.replace(/\s*\(Windows\)/i, ''),
-                    `Adobe Illustrator ${majorVer}.0`,
-                    `Illustrator ${majorVer}.0`,
-                    `AI ${majorVer}.0`
-                ];
-
-                let chosenCandidate = null;
+                const candidates = [aiMeta.dscCreator, aiMeta.xmpCreatorTool, `Adobe Illustrator ${aiMeta.shortVer}`];
                 for (const cand of candidates) {
-                    const enc = new TextEncoder().encode(cand);
+                    const enc = binaryStringToUint8(cand);
                     if (enc.length <= availableSpace) {
-                        chosenCandidate = cand;
+                        uint8.set(enc, valStart);
+                        for (let i = valStart + enc.length; i < parenClose; i++) uint8[i] = 0x20;
                         break;
                     }
                 }
-                if (!chosenCandidate && availableSpace > 4) {
-                    chosenCandidate = softwareStr.substring(0, availableSpace);
-                }
-                if (chosenCandidate) {
-                    const encoded = new TextEncoder().encode(chosenCandidate);
-                    uint8.set(encoded, valStart);
-                    for (let i = valStart + encoded.length; i < parenClose; i++) {
-                        uint8[i] = 0x20;
-                    }
-                }
             }
         }
     }
 
-    // 3. Illustrator Version Structural Comments: %AI8_CreatorVersion: and %AI9_CreatorVersion:
-    const versionPrefixes = ['%AI8_CreatorVersion:', '%AI9_CreatorVersion:'];
-    for (const vPrefix of versionPrefixes) {
-        const idx = indexOfAsciiBytes(uint8, vPrefix, 0, Math.min(uint8.length, 131072));
-        if (idx !== -1) {
-            let lineEnd = idx;
-            while (lineEnd < uint8.length && uint8[lineEnd] !== 0x0A && uint8[lineEnd] !== 0x0D) {
-                lineEnd++;
-            }
-            const valStart = idx + vPrefix.length;
-            const availableSpace = lineEnd - valStart;
-            const verStr = ` ${majorVer}.0.0`;
-            const encoded = new TextEncoder().encode(verStr);
-            if (encoded.length <= availableSpace) {
-                uint8.set(encoded, valStart);
-                for (let i = valStart + encoded.length; i < lineEnd; i++) {
-                    uint8[i] = 0x20;
-                }
-            }
-        }
-    }
-
-    // 4. PostScript DSC Owner: %%For:
-    if (ownerName && ownerName.trim()) {
-        const prefix = '%%For:';
-        const idx = indexOfAsciiBytes(uint8, prefix, 0, Math.min(uint8.length, 131072));
-        if (idx !== -1) {
-            let lineEnd = idx;
-            while (lineEnd < uint8.length && uint8[lineEnd] !== 0x0A && uint8[lineEnd] !== 0x0D) {
-                lineEnd++;
-            }
-            const valStart = idx + prefix.length;
-            const availableSpace = lineEnd - valStart;
-            const cleanOwner = ownerName.trim();
-            let forStr = ' (' + cleanOwner + ')';
-            let encoded = new TextEncoder().encode(forStr);
-            if (encoded.length > availableSpace && availableSpace > 4) {
-                const maxChars = Math.max(0, availableSpace - 3);
-                forStr = ' (' + cleanOwner.substring(0, maxChars) + ')';
-                encoded = new TextEncoder().encode(forStr);
-            }
-            if (encoded.length <= availableSpace) {
-                uint8.set(encoded, valStart);
-                for (let i = valStart + encoded.length; i < lineEnd; i++) {
-                    uint8[i] = 0x20; // pad remainder with spaces
-                }
-            }
-        }
-    }
-
-    // 5. PDF-based AI Owner: /Author (...)
-    if (ownerName && ownerName.trim()) {
+    if (ownerName) {
         const pdfAuthorPrefix = '/Author';
-        const pdfIdx = indexOfAsciiBytes(uint8, pdfAuthorPrefix, 0, Math.min(uint8.length, 131072));
-        if (pdfIdx !== -1) {
-            let parenOpen = pdfIdx + pdfAuthorPrefix.length;
+        const pdfAuthIdx = indexOfAsciiBytes(uint8, pdfAuthorPrefix, 0, Math.min(uint8.length, 131072));
+        if (pdfAuthIdx !== -1) {
+            let parenOpen = pdfAuthIdx + pdfAuthorPrefix.length;
             while (parenOpen < uint8.length && uint8[parenOpen] !== 0x28 && (uint8[parenOpen] === 0x20 || uint8[parenOpen] === 0x0A || uint8[parenOpen] === 0x0D)) {
                 parenOpen++;
             }
@@ -2886,16 +3257,10 @@ function injectEpsCreatorAndForString(arrayBuffer, softwareStr, ownerName, aiVer
                 if (parenClose < uint8.length && uint8[parenClose] === 0x29) {
                     const valStart = parenOpen + 1;
                     const availableSpace = parenClose - valStart;
-                    const cleanOwner = ownerName.trim();
-                    let encoded = new TextEncoder().encode(cleanOwner);
-                    if (encoded.length > availableSpace && availableSpace > 2) {
-                        encoded = new TextEncoder().encode(cleanOwner.substring(0, availableSpace));
-                    }
-                    if (encoded.length <= availableSpace) {
-                        uint8.set(encoded, valStart);
-                        for (let i = valStart + encoded.length; i < parenClose; i++) {
-                            uint8[i] = 0x20;
-                        }
+                    const enc = new TextEncoder().encode(ownerName.substring(0, availableSpace));
+                    if (enc.length <= availableSpace) {
+                        uint8.set(enc, valStart);
+                        for (let i = valStart + enc.length; i < parenClose; i++) uint8[i] = 0x20;
                     }
                 }
             }
@@ -2907,22 +3272,20 @@ function injectEpsCreatorAndForString(arrayBuffer, softwareStr, ownerName, aiVer
 
 function processVector(fileObj, mode) {
     const isCustom = mode.startsWith('CUSTOM_PROFILE_');
-    const effectiveMode = isCustom ? 'STOCK' : mode;
 
     if (isSvg(fileObj.originalFile)) {
         const text = new TextDecoder('utf-8').decode(fileObj.originalArrayBuffer);
-        let cleanText = cleanSvgFile(text, effectiveMode);
+        let cleanText = cleanSvgFile(text, isCustom ? 'CUSTOM' : mode);
 
         if (isCustom) {
             const profKey = mode.replace('CUSTOM_', '').toLowerCase();
             const prof = window.getCustomProfile ? window.getCustomProfile(profKey) : null;
             const aiVersion = prof ? (prof.aiVersion || prof.version || "2024") : "2024";
             const ownerName = prof ? (prof.name || "").trim() : "";
-            const majorVer = getIllustratorMajorVersion(aiVersion);
-            const softwareStr = window.getSoftwareString ? window.getSoftwareString("Illustrator", aiVersion) : `Adobe Illustrator ${majorVer}.0 (Windows)`;
-            const generatorComment = `<!-- Generator: Adobe Illustrator ${majorVer}.0.0, SVG Export Plug-In . SVG Version: 6.00 Build 0)  -->`;
+            const aiMeta = getLocalIllustratorAuthenticMeta(aiVersion);
+            const generatorComment = `<!-- Generator: Adobe Illustrator ${aiMeta.fullVer}, SVG Export Plug-In . SVG Version: 6.00 Build 0)  -->`;
 
-            // 1. Replace or prepend Illustrator Generator XML comment
+            // 1. Replace or prepend authentic Illustrator Generator XML comment
             if (/<!--\s*Generator:[\s\S]*?-->/i.test(cleanText)) {
                 cleanText = cleanText.replace(/<!--\s*Generator:[\s\S]*?-->/i, generatorComment);
             } else {
@@ -2930,13 +3293,13 @@ function processVector(fileObj, mode) {
             }
 
             // 2. Update or insert <meta name="generator"> and <meta name="author">
-            let metaElements = `<meta name="generator" content="${escapeHtml(softwareStr)}" />`;
+            let metaElements = `<meta name="generator" content="${escapeHtml(aiMeta.xmpCreatorTool)}" />`;
             if (ownerName) {
                 metaElements += `\n    <meta name="author" content="${escapeHtml(ownerName)}" />\n    <dc:creator xmlns:dc="http://purl.org/dc/elements/1.1/"><rdf:Seq xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:li>${escapeHtml(ownerName)}</rdf:li></rdf:Seq></dc:creator>`;
             }
 
             if (cleanText.includes('<meta name="generator"')) {
-                cleanText = cleanText.replace(/<meta\s+name=["']generator["'][^>]*>/gi, `<meta name="generator" content="${escapeHtml(softwareStr)}" />`);
+                cleanText = cleanText.replace(/<meta\s+name=["']generator["'][^>]*>/gi, `<meta name="generator" content="${escapeHtml(aiMeta.xmpCreatorTool)}" />`);
             }
             if (ownerName && cleanText.includes('<meta name="author"')) {
                 cleanText = cleanText.replace(/<meta\s+name=["']author["'][^>]*>/gi, `<meta name="author" content="${escapeHtml(ownerName)}" />`);
@@ -2948,26 +3311,23 @@ function processVector(fileObj, mode) {
                 cleanText = cleanText.replace(/<metadata\b([^>]*)>/i, `<metadata$1>\n    ${metaElements}`);
             }
 
-            // 3. Update embedded XMP CreatorTool if present
-            if (cleanText.includes('<xmp:CreatorTool>')) {
-                cleanText = cleanText.replace(/<xmp:CreatorTool>[\s\S]*?<\/xmp:CreatorTool>/gi, `<xmp:CreatorTool>${escapeHtml(softwareStr)}</xmp:CreatorTool>`);
+            // 3. Update embedded XMP inside SVG if present
+            if (cleanText.includes('<x:xmpmeta')) {
+                cleanText = spoofXmpStringWithAdobeMeta(cleanText, aiMeta.xmpCreatorTool, aiMeta.xmptk, aiMeta.pdfProducer, ownerName);
             }
         }
         return new Blob([cleanText], { type: 'image/svg+xml' });
     } else {
-        // EPS / AI — 100% Byte-Safe in-place buffer cleaning
-        let cleanedBuffer = cleanEpsBuffer(fileObj.originalArrayBuffer, effectiveMode);
+        // EPS / AI
         if (isCustom) {
             const profKey = mode.replace('CUSTOM_', '').toLowerCase();
             const prof = window.getCustomProfile ? window.getCustomProfile(profKey) : null;
-            const aiVersion = prof ? (prof.aiVersion || prof.version || "2024") : "2024";
-            const ownerName = prof ? (prof.name || "").trim() : "";
-            if (window.getSoftwareString) {
-                const softwareStr = window.getSoftwareString("Illustrator", aiVersion);
-                cleanedBuffer = injectEpsCreatorAndForString(cleanedBuffer, softwareStr, ownerName, aiVersion);
-            }
+            const spoofedBuffer = spoofEpsBufferAuthentic(fileObj.originalArrayBuffer, prof);
+            return new Blob([spoofedBuffer], { type: fileObj.type || 'application/postscript' });
+        } else {
+            const cleanedBuffer = cleanEpsBuffer(fileObj.originalArrayBuffer, mode);
+            return new Blob([cleanedBuffer], { type: fileObj.type || 'application/postscript' });
         }
-        return new Blob([cleanedBuffer], { type: fileObj.type || 'application/postscript' });
     }
 }
 
@@ -3283,7 +3643,7 @@ function renderImageMetadata(m, fileObj) {
     }
 
     // Camera Category
-    if (m.Make || m.Model || m.LensModel || m.ISO || m.FNumber || m.Software || m.HostComputer || m.CreatorTool) {
+    if (m.Make || m.Model || m.LensModel || m.ISO || m.FNumber || m.Software || m.HostComputer || m.CreatorTool || m.Artist) {
         html += `
         <div class="meta-category">
             <div class="meta-category-header"><i class='bx bx-camera'></i> Camera & EXIF</div>
@@ -3297,6 +3657,7 @@ function renderImageMetadata(m, fileObj) {
                 ${m.Software ? `<tr><th>Software</th><td class="val-warning">${m.Software}</td></tr>` : ''}
                 ${m.CreatorTool ? `<tr><th>CreatorTool</th><td class="val-warning">${m.CreatorTool}</td></tr>` : ''}
                 ${m.HostComputer ? `<tr><th>Host Computer</th><td class="val-warning">${m.HostComputer}</td></tr>` : ''}
+                ${m.Artist ? `<tr><th>Artist (Owner)</th><td class="val-warning">${m.Artist}</td></tr>` : ''}
             </table>
         </div>`;
     }
@@ -3448,15 +3809,30 @@ function renderVectorMetadata(m, fileObj) {
     let html = '';
 
     // Creator / Software
-    const creatorKeys = ['Creator', 'Detected Creator', 'For (Author)', 'Creation Date'];
+    const creatorKeys = [
+        'Creator',
+        'AI Creator Version',
+        'ADO Build Number',
+        'xmp:CreatorTool',
+        'x:xmptk',
+        'pdf:Producer',
+        'Creator Tool',
+        'Creator (Generator)',
+        'Creator (Generator Tag)',
+        'Detected Creator',
+        'For (Author)',
+        'Private Data Author',
+        'Private Data Version',
+        'Creation Date'
+    ];
     let creatorRows = '';
     for (const key of creatorKeys) {
-        if (m[key]) creatorRows += `<tr><th>${key}</th><td class="val-warning">${m[key]}</td></tr>`;
+        if (m[key]) creatorRows += `<tr><th>${key}</th><td class="val-warning">${escapeHtml(m[key])}</td></tr>`;
     }
     if (creatorRows) {
         html += `
         <div class="meta-category" style="border-color: rgba(245, 158, 11, 0.3);">
-            <div class="meta-category-header" style="color: var(--warning);"><i class='bx bx-pen'></i> Creator Info</div>
+            <div class="meta-category-header" style="color: var(--warning);"><i class='bx bx-pen'></i> Creator &amp; Forensic Version Info</div>
             <table class="meta-table">${creatorRows}</table>
         </div>`;
     }
@@ -3718,21 +4094,28 @@ function extractPngTextChunks(arrayBuffer) {
     return textData;
 }
 
-// Deep XMP extraction from raw file bytes
+// Deep XMP extraction from raw file bytes (Byte-indexed for instant speed on 30MB+ EPS/Video files)
 function extractXmpFromBytes(arrayBuffer) {
     const result = {};
+    if (!arrayBuffer || arrayBuffer.byteLength < 20) return result;
     const bytes = new Uint8Array(arrayBuffer);
 
-    const decoder = new TextDecoder('utf-8', { fatal: false });
-    const fullStr = decoder.decode(bytes);
+    const openTag = '<x:xmpmeta';
+    const closeTag = '</x:xmpmeta>';
 
-    const xmpStart = fullStr.indexOf('<x:xmpmeta');
+    const xmpStart = indexOfAsciiBytes(bytes, openTag, 0, bytes.length);
     if (xmpStart === -1) return result;
 
-    const xmpEnd = fullStr.indexOf('</x:xmpmeta>', xmpStart);
+    const xmpEnd = indexOfAsciiBytes(bytes, closeTag, xmpStart, bytes.length);
     if (xmpEnd === -1) return result;
 
-    const xmpString = fullStr.substring(xmpStart, xmpEnd + 12);
+    const decoder = new TextDecoder('utf-8', { fatal: false });
+    const xmpString = decoder.decode(bytes.subarray(xmpStart, xmpEnd + closeTag.length));
+
+    const xmptkMatch = xmpString.match(/x:xmptk\s*=\s*["']([^"']+)["']/i);
+    if (xmptkMatch && xmptkMatch[1].trim()) {
+        result['x:xmptk'] = xmptkMatch[1].trim();
+    }
 
     try {
         const parser = new DOMParser();
@@ -3756,7 +4139,7 @@ function extractXmpFromBytes(arrayBuffer) {
                 continue;
             }
 
-            if (['RDF', 'Description', 'xmpmeta', 'Seq', 'Bag', 'Alt', 'li'].includes(tagName)) continue;
+            if (['RDF', 'Description', 'xmpmeta', 'Seq', 'Bag', 'Alt', 'li', 'image'].includes(tagName)) continue;
 
             const prefix = el.prefix || '';
             const displayKey = prefix ? `${prefix}:${tagName}` : tagName;
@@ -3786,7 +4169,7 @@ function extractXmpFromBytes(arrayBuffer) {
 
     // Only include RawXMP if actual metadata fields were found inside the XMP packet
     if (Object.keys(result).length > 0) {
-        result['RawXMP'] = xmpString.replace(/\s{10,}/g, ' ');
+        result['RawXMP'] = xmpString.replace(/<xmpGImg:image>[\s\S]*?<\/xmpGImg:image>/gi, '<xmpGImg:image>[Base64 Thumbnail]</xmpGImg:image>').replace(/\s{10,}/g, ' ');
     }
 
     return result;
