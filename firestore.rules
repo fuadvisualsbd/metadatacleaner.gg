@@ -1,0 +1,39 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        request.auth.token.email == 'fuyad212002@gmail.com' ||
+        request.auth.token.email == 'fuyad600@gmail.com'
+      );
+    }
+
+    // Rules for 'users' collection
+    match /users/{userId} {
+      // 1. Any logged-in user can read their own profile document
+      // 2. Admins can read all users (needed for Admin Panel user list)
+      allow read: if isOwner(userId) || isAdmin();
+
+      // Users can create and update their own document (e.g. login sync, customProfiles)
+      allow create, update: if isOwner(userId);
+
+      // Only admins can delete user documents
+      allow delete: if isAdmin();
+    }
+
+    // Deny all other collections by default for maximum security
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

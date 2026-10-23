@@ -5,9 +5,7 @@
 // ===================================================
 
 const TG_CONFIG = {
-    PRIMARY_TOKEN: "8967147270:AAHJ72QHYZI47Fp8s4PAUo37sr1x_Uy7eAQ",
-    FALLBACK_TOKEN: "8685821226:AAHrc_hMMI3SKIUFobsgur3MfWyW6ec9n_w",
-    CHAT_ID: "5317269928",
+    API_ENDPOINT: "/api/telegram",
     ENABLED: true
 };
 
@@ -129,39 +127,23 @@ function getBDTime() {
     });
 }
 
-// Send Message with Primary -> Fallback failover
+// Send Message via secure Vercel Serverless Function (/api/telegram)
 async function sendRawTelegram(htmlText) {
     if (!TG_CONFIG.ENABLED) return;
-    const payload = {
-        chat_id: TG_CONFIG.CHAT_ID,
-        text: htmlText,
-        parse_mode: "HTML",
-        disable_web_page_preview: true
-    };
-
-    // 1. Primary Bot (@fvlabsmetacleanerbot)
     try {
-        const res = await fetch(`https://api.telegram.org/bot${TG_CONFIG.PRIMARY_TOKEN}/sendMessage`, {
+        const res = await fetch(TG_CONFIG.API_ENDPOINT, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload)
+            body: JSON.stringify({
+                text: htmlText,
+                parse_mode: "HTML"
+            })
         });
-        const json = await res.json();
-        if (json.ok) return;
-        console.warn("[TelegramTracker] Primary bot failed, failing over:", json.description);
+        if (!res.ok) {
+            console.warn("[TelegramTracker] Notification endpoint status:", res.status);
+        }
     } catch (e) {
-        console.warn("[TelegramTracker] Network error on primary bot:", e);
-    }
-
-    // 2. Fallback Bot
-    try {
-        await fetch(`https://api.telegram.org/bot${TG_CONFIG.FALLBACK_TOKEN}/sendMessage`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload)
-        });
-    } catch (e) {
-        console.error("[TelegramTracker] Fallback also failed:", e);
+        console.warn("[TelegramTracker] Could not deliver alert:", e);
     }
 }
 
