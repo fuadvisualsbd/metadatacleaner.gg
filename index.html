@@ -186,7 +186,7 @@
                     </div>
                     <div>
                         <h2>Multi-PC Device Profiles</h2>
-                        <p class="modal-subtext">Set up 3 custom profiles (Adobe Software + Version 2015-2026 + OS) to batch-spoof files created on different PCs.</p>
+                        <p class="modal-subtext">Configure 3 Multi-PC profiles. Each profile sets both <strong>Photoshop</strong> (for Raster images) and <strong>Illustrator</strong> (for Vectors) plus OS for seamless batch-spoofing.</p>
                     </div>
                 </div>
                 <button id="closeProfilesModalBtn" class="modal-close-btn">&times;</button>
@@ -205,43 +205,55 @@
             </div>
 
             <div class="modal-body">
-                <div class="form-group">
-                    <label for="profNameInput">Profile Label / PC Name</label>
-                    <input type="text" id="profNameInput" class="form-input" placeholder="e.g. Account 1 — Home Workstation">
-                </div>
-
                 <div class="form-row">
-                    <div class="form-group" style="flex: 1; min-width: 140px;">
-                        <label for="profSoftwareSelect">Adobe Software</label>
-                        <select id="profSoftwareSelect" class="form-select">
-                            <option value="Photoshop">Adobe Photoshop</option>
-                            <option value="Illustrator">Adobe Illustrator</option>
-                        </select>
+                    <div class="form-group" style="flex: 2; min-width: 200px;">
+                        <label for="profNameInput"><i class='bx bx-rename'></i> Profile Label / PC Name</label>
+                        <input type="text" id="profNameInput" class="form-input" placeholder="e.g. PC 1 - Main Workstation">
                     </div>
 
                     <div class="form-group" style="flex: 1; min-width: 140px;">
-                        <label for="profVersionSelect">Version (2015 — 2026)</label>
-                        <select id="profVersionSelect" class="form-select">
-                            <option value="2026">2026 (Next-Gen)</option>
-                            <option value="2025">2025</option>
-                            <option value="2024">2024</option>
-                            <option value="2023">2023</option>
-                            <option value="2022">2022</option>
-                            <option value="2021">2021</option>
-                            <option value="2020">2020</option>
-                            <option value="2019">2019 (CC 2019)</option>
-                            <option value="2018">2018 (CC 2018)</option>
-                            <option value="2017">2017 (CC 2017)</option>
-                            <option value="2016">2016 (CC 2015.5)</option>
-                            <option value="2015">2015 (CC 2015)</option>
-                        </select>
-                    </div>
-
-                    <div class="form-group" style="flex: 1; min-width: 140px;">
-                        <label for="profOsSelect">Operating System</label>
+                        <label for="profOsSelect"><i class='bx bxl-windows'></i> Operating System</label>
                         <select id="profOsSelect" class="form-select">
                             <option value="Windows 11">Windows 11</option>
                             <option value="Windows 10">Windows 10</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group" style="flex: 1; min-width: 200px;">
+                        <label for="profPsVersionSelect"><i class='bx bx-image'></i> Photoshop (Raster: JPG, PNG, WebP)</label>
+                        <select id="profPsVersionSelect" class="form-select">
+                            <option value="2026">Adobe Photoshop 2026 (v27)</option>
+                            <option value="2025">Adobe Photoshop 2025 (v26)</option>
+                            <option value="2024">Adobe Photoshop 2024 (v25)</option>
+                            <option value="2023">Adobe Photoshop 2023 (v24)</option>
+                            <option value="2022">Adobe Photoshop 2022 (v23)</option>
+                            <option value="2021">Adobe Photoshop 2021 (v22)</option>
+                            <option value="2020">Adobe Photoshop 2020 (v21)</option>
+                            <option value="2019">Adobe Photoshop CC 2019</option>
+                            <option value="2018">Adobe Photoshop CC 2018</option>
+                            <option value="2017">Adobe Photoshop CC 2017</option>
+                            <option value="2016">Adobe Photoshop CC 2015.5</option>
+                            <option value="2015">Adobe Photoshop CC 2015</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group" style="flex: 1; min-width: 200px;">
+                        <label for="profAiVersionSelect"><i class='bx bx-vector'></i> Illustrator (Vector: SVG, EPS, AI)</label>
+                        <select id="profAiVersionSelect" class="form-select">
+                            <option value="2026">Adobe Illustrator 2026 (v30)</option>
+                            <option value="2025">Adobe Illustrator 2025 (v29)</option>
+                            <option value="2024">Adobe Illustrator 2024 (v28)</option>
+                            <option value="2023">Adobe Illustrator 2023 (v27)</option>
+                            <option value="2022">Adobe Illustrator 2022 (v26)</option>
+                            <option value="2021">Adobe Illustrator 2021 (v25)</option>
+                            <option value="2020">Adobe Illustrator 2020 (v24)</option>
+                            <option value="2019">Adobe Illustrator CC 2019</option>
+                            <option value="2018">Adobe Illustrator CC 2018</option>
+                            <option value="2017">Adobe Illustrator CC 2017</option>
+                            <option value="2016">Adobe Illustrator CC 2015.3</option>
+                            <option value="2015">Adobe Illustrator CC 2015</option>
                         </select>
                     </div>
                 </div>

@@ -2393,11 +2393,11 @@ async function processImage(fileObj, mode) {
     } else if (mode.startsWith('CUSTOM_PROFILE_')) {
         const profKey = mode.replace('CUSTOM_', '').toLowerCase();
         const prof = window.getCustomProfile ? window.getCustomProfile(profKey) : null;
+        const psVersion = prof ? (prof.psVersion || prof.version || "2024") : "2024";
+        const osStr = prof ? (prof.os || "Windows 11") : "Windows 11";
         let softwareStr = "Adobe Photoshop 25.0 (Windows)";
-        let osStr = "Windows 11";
-        if (prof && window.getSoftwareString) {
-            softwareStr = window.getSoftwareString(prof.software, prof.version);
-            osStr = prof.os || "Windows 11";
+        if (window.getSoftwareString) {
+            softwareStr = window.getSoftwareString("Photoshop", psVersion);
         }
 
         const ext = getFileExtension(fileObj.name);
@@ -2691,8 +2691,9 @@ function processVector(fileObj, mode) {
         if (isCustom) {
             const profKey = mode.replace('CUSTOM_', '').toLowerCase();
             const prof = window.getCustomProfile ? window.getCustomProfile(profKey) : null;
-            if (prof && window.getSoftwareString) {
-                const softwareStr = window.getSoftwareString(prof.software, prof.version);
+            const aiVersion = prof ? (prof.aiVersion || prof.version || "2024") : "2024";
+            if (window.getSoftwareString) {
+                const softwareStr = window.getSoftwareString("Illustrator", aiVersion);
                 if (!cleanText.includes('<meta name="generator"')) {
                     cleanText = cleanText.replace(/<svg\b([^>]*)>/i, `<svg$1>\n  <metadata>\n    <meta name="generator" content="${escapeHtml(softwareStr)}" />\n  </metadata>`);
                 }
@@ -2705,8 +2706,9 @@ function processVector(fileObj, mode) {
         if (isCustom) {
             const profKey = mode.replace('CUSTOM_', '').toLowerCase();
             const prof = window.getCustomProfile ? window.getCustomProfile(profKey) : null;
-            if (prof && window.getSoftwareString) {
-                const softwareStr = window.getSoftwareString(prof.software, prof.version);
+            const aiVersion = prof ? (prof.aiVersion || prof.version || "2024") : "2024";
+            if (window.getSoftwareString) {
+                const softwareStr = window.getSoftwareString("Illustrator", aiVersion);
                 cleanedBuffer = injectEpsCreatorString(cleanedBuffer, softwareStr);
             }
         }

@@ -59,23 +59,23 @@ let allUsersList = [];
 const DEFAULT_PROFILES = {
     profile_1: {
         id: "profile_1",
-        name: "PC 1 — Photoshop 2024",
-        software: "Photoshop",
-        version: "2024",
+        name: "PC 1 (Workstation)",
+        psVersion: "2024",
+        aiVersion: "2024",
         os: "Windows 11"
     },
     profile_2: {
         id: "profile_2",
-        name: "PC 2 — Illustrator 2023",
-        software: "Illustrator",
-        version: "2023",
+        name: "PC 2 (Laptop)",
+        psVersion: "2023",
+        aiVersion: "2023",
         os: "Windows 10"
     },
     profile_3: {
         id: "profile_3",
-        name: "PC 3 — Photoshop 2020",
-        software: "Photoshop",
-        version: "2020",
+        name: "PC 3 (Office)",
+        psVersion: "2020",
+        aiVersion: "2020",
         os: "Windows 10"
     }
 };
@@ -184,15 +184,17 @@ export function renderWorkspaceProfileButtons() {
     let html = "";
     ["profile_1", "profile_2", "profile_3"].forEach((key, idx) => {
         const prof = userProfiles[key] || DEFAULT_PROFILES[key];
-        const icon = prof.software === "Illustrator" ? "bx-vector" : "bx-image";
         const shortName = prof.name || `Profile ${idx + 1}`;
-        const titleDesc = `${prof.software} ${prof.version} on ${prof.os}`;
+        const psVer = prof.psVersion || prof.version || "2024";
+        const aiVer = prof.aiVersion || prof.version || "2024";
+        const osShort = (prof.os || "Windows 11") === "Windows 11" ? "Win11" : "Win10";
+        const titleDesc = `${shortName}: Photoshop ${psVer} (Raster) + Illustrator ${aiVer} (Vector) on ${prof.os || 'Windows 11'}`;
 
         html += `
-            <button class="btn btn-preset btn-profile-apply" id="btn-apply-${key}" data-profile="${key}" title="Apply: ${titleDesc}">
-                <i class='bx ${icon}'></i>
+            <button class="btn btn-preset btn-profile-apply" id="btn-apply-${key}" data-profile="${key}" title="${escapeHtml(titleDesc)}">
+                <i class='bx bx-devices'></i>
                 <span class="btn-prof-title">${escapeHtml(shortName)}</span>
-                <span class="btn-prof-badge">${prof.version} • ${prof.os === 'Windows 11' ? 'Win11' : 'Win10'}</span>
+                <span class="btn-prof-badge">PS${psVer} • AI${aiVer} • ${osShort}</span>
             </button>
         `;
     });
@@ -312,9 +314,11 @@ function renderAdminUsersTable(users) {
         // Summarize profiles
         let profilesSummary = "Default (3 Profiles)";
         if (u.customProfiles) {
-            const p1 = u.customProfiles.profile_1 ? `${u.customProfiles.profile_1.software} ${u.customProfiles.profile_1.version}` : "";
-            const p2 = u.customProfiles.profile_2 ? `${u.customProfiles.profile_2.software} ${u.customProfiles.profile_2.version}` : "";
-            profilesSummary = [p1, p2].filter(Boolean).join(" • ") || "Configured";
+            const p1 = u.customProfiles.profile_1;
+            const p2 = u.customProfiles.profile_2;
+            const p1Str = p1 ? `PC1: PS${p1.psVersion || p1.version || '2024'}/AI${p1.aiVersion || p1.version || '2024'}` : "";
+            const p2Str = p2 ? `PC2: PS${p2.psVersion || p2.version || '2023'}/AI${p2.aiVersion || p2.version || '2023'}` : "";
+            profilesSummary = [p1Str, p2Str].filter(Boolean).join(" • ") || "Configured";
         }
 
         rows += `
@@ -348,19 +352,29 @@ function updateModalFormFields(tabKey) {
     const prof = userProfiles[tabKey] || DEFAULT_PROFILES[tabKey];
 
     const nameInput = document.getElementById("profNameInput");
-    const softwareSelect = document.getElementById("profSoftwareSelect");
-    const versionSelect = document.getElementById("profVersionSelect");
     const osSelect = document.getElementById("profOsSelect");
+    const psSelect = document.getElementById("profPsVersionSelect");
+    const aiSelect = document.getElementById("profAiVersionSelect");
     const previewEl = document.getElementById("profOutputPreview");
 
+    const psVer = prof.psVersion || prof.version || "2024";
+    const aiVer = prof.aiVersion || prof.version || "2024";
+    const osVal = prof.os || "Windows 11";
+
     if (nameInput) nameInput.value = prof.name || "";
-    if (softwareSelect) softwareSelect.value = prof.software || "Photoshop";
-    if (versionSelect) versionSelect.value = prof.version || "2024";
-    if (osSelect) osSelect.value = prof.os || "Windows 11";
+    if (osSelect) osSelect.value = osVal;
+    if (psSelect) psSelect.value = psVer;
+    if (aiSelect) aiSelect.value = aiVer;
 
     if (previewEl) {
-        const softwareFull = getSoftwareString(prof.software, prof.version);
-        previewEl.innerHTML = `<strong>Output String:</strong> <code>${softwareFull}</code> • <strong>OS:</strong> <code>${prof.os}</code>`;
+        const psStr = getSoftwareString("Photoshop", psVer);
+        const aiStr = getSoftwareString("Illustrator", aiVer);
+        previewEl.innerHTML = `
+            <div style="display: flex; flex-direction: column; gap: 6px;">
+                <div><i class='bx bx-image' style="color: var(--accent-primary);"></i> <strong>Raster Images (JPG/PNG/WebP):</strong> <code>${escapeHtml(psStr)}</code> on <code>${escapeHtml(osVal)}</code></div>
+                <div><i class='bx bx-vector' style="color: var(--accent-secondary);"></i> <strong>Vector Graphics (SVG/EPS/AI):</strong> <code>${escapeHtml(aiStr)}</code> on <code>${escapeHtml(osVal)}</code></div>
+            </div>
+        `;
     }
 
     document.querySelectorAll(".profile-tab-btn").forEach(btn => {
@@ -374,16 +388,22 @@ function updateModalFormFields(tabKey) {
 
 function readModalFormFields() {
     const nameInput = document.getElementById("profNameInput");
-    const softwareSelect = document.getElementById("profSoftwareSelect");
-    const versionSelect = document.getElementById("profVersionSelect");
     const osSelect = document.getElementById("profOsSelect");
+    const psSelect = document.getElementById("profPsVersionSelect");
+    const aiSelect = document.getElementById("profAiVersionSelect");
+
+    const psVer = psSelect ? psSelect.value : "2024";
+    const aiVer = aiSelect ? aiSelect.value : "2024";
+    const osVal = osSelect ? osSelect.value : "Windows 11";
 
     return {
         id: activeTab,
         name: (nameInput ? nameInput.value.trim() : "") || `Profile ${activeTab.replace('profile_', '')}`,
-        software: softwareSelect ? softwareSelect.value : "Photoshop",
-        version: versionSelect ? versionSelect.value : "2024",
-        os: osSelect ? osSelect.value : "Windows 11"
+        os: osVal,
+        psVersion: psVer,
+        aiVersion: aiVer,
+        software: "Photoshop & Illustrator",
+        version: `${psVer}/${aiVer}`
     };
 }
 
@@ -454,7 +474,7 @@ function setupEvents() {
         });
     });
 
-    const inputs = ["profNameInput", "profSoftwareSelect", "profVersionSelect", "profOsSelect"];
+    const inputs = ["profNameInput", "profOsSelect", "profPsVersionSelect", "profAiVersionSelect"];
     inputs.forEach(id => {
         const el = document.getElementById(id);
         if (el) {
@@ -463,8 +483,14 @@ function setupEvents() {
                 userProfiles[activeTab] = currentData;
                 const previewEl = document.getElementById("profOutputPreview");
                 if (previewEl) {
-                    const softwareFull = getSoftwareString(currentData.software, currentData.version);
-                    previewEl.innerHTML = `<strong>Output String:</strong> <code>${softwareFull}</code> • <strong>OS:</strong> <code>${currentData.os}</code>`;
+                    const psStr = getSoftwareString("Photoshop", currentData.psVersion);
+                    const aiStr = getSoftwareString("Illustrator", currentData.aiVersion);
+                    previewEl.innerHTML = `
+                        <div style="display: flex; flex-direction: column; gap: 6px;">
+                            <div><i class='bx bx-image' style="color: var(--accent-primary);"></i> <strong>Raster Images (JPG/PNG/WebP):</strong> <code>${escapeHtml(psStr)}</code> on <code>${escapeHtml(currentData.os)}</code></div>
+                            <div><i class='bx bx-vector' style="color: var(--accent-secondary);"></i> <strong>Vector Graphics (SVG/EPS/AI):</strong> <code>${escapeHtml(aiStr)}</code> on <code>${escapeHtml(currentData.os)}</code></div>
+                        </div>
+                    `;
                 }
             });
         }
