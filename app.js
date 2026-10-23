@@ -2300,6 +2300,11 @@ async function processFiles(mode) {
 
     updateQueueStats();
     if (activeFileId) selectFile(activeFileId);
+
+    // Notify Telegram tracker of clean action
+    if (window.triggerCleanActionAlert && filesList.length > 0) {
+        window.triggerCleanActionAlert(mode, filesList.length);
+    }
 }
 
 async function processImage(fileObj, mode) {
