@@ -26,14 +26,14 @@ export const ADMIN_EMAILS = [
     "fuyad600@gmail.com"
 ];
 
-// Firebase Config (StockMetadata Hub)
+// Firebase Config (Dedicated MetaCleaner Pro Project)
 const firebaseConfig = {
-    apiKey: "AIzaSyAlNxUKHw_rh_fkfoJL1QBVjmdSdJTbKnM",
-    authDomain: "stockmetadata-63e30.firebaseapp.com",
-    projectId: "stockmetadata-63e30",
-    storageBucket: "stockmetadata-63e30.firebasestorage.app",
-    messagingSenderId: "316005330427",
-    appId: "1:316005330427:web:fcbd9d228258fe2abe6f5e"
+    apiKey: "AIzaSyCQjlIW8fdDGFuL5Qy_7lIqTen0h8yEzLg",
+    authDomain: "metadata-cleaner-69a95.firebaseapp.com",
+    projectId: "metadata-cleaner-69a95",
+    storageBucket: "metadata-cleaner-69a95.firebasestorage.app",
+    messagingSenderId: "700518487065",
+    appId: "1:700518487065:web:a8a9096a6edfbc1c2f0608"
 };
 
 let app = null;
