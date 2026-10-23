@@ -1575,15 +1575,35 @@ function extractSvgMetadata(svgText) {
         if (inkscapeCount > 0) metadata['Inkscape Data Points'] = inkscapeCount;
         if (sodipodiCount > 0) metadata['Sodipodi Data Points'] = sodipodiCount;
 
-        // Detect creator tool from common patterns
-        if (svgText.includes('Illustrator') || svgText.includes('adobe:ns:meta')) {
-            metadata['Detected Creator'] = 'Adobe Illustrator';
+        // 9. Exact Generator & Creator detection
+        const genCommentMatch = svgText.match(/<!--\s*Generator:\s*([^\r\n>]+)-->/i);
+        if (genCommentMatch) {
+            metadata['Creator (Generator)'] = genCommentMatch[1].trim();
+        }
+
+        const metaGen = doc.querySelector('meta[name="generator"]');
+        if (metaGen && metaGen.getAttribute('content')) {
+            metadata['Creator (Generator Tag)'] = metaGen.getAttribute('content').trim();
+        }
+
+        const metaAuthor = doc.querySelector('meta[name="author"]');
+        if (metaAuthor && metaAuthor.getAttribute('content')) {
+            metadata['For (Author)'] = metaAuthor.getAttribute('content').trim();
+        }
+
+        // Summary Creator Tool
+        if (metadata['Creator (Generator Tag)']) {
+            metadata['Creator Tool'] = metadata['Creator (Generator Tag)'];
+        } else if (metadata['Creator (Generator)']) {
+            metadata['Creator Tool'] = metadata['Creator (Generator)'];
+        } else if (svgText.includes('Illustrator') || svgText.includes('adobe:ns:meta')) {
+            metadata['Creator Tool'] = 'Adobe Illustrator';
         } else if (inkscapeCount > 0 || svgText.includes('inkscape')) {
-            metadata['Detected Creator'] = 'Inkscape';
+            metadata['Creator Tool'] = 'Inkscape';
         } else if (svgText.includes('Sketch') || svgText.includes('sketch:')) {
-            metadata['Detected Creator'] = 'Sketch';
+            metadata['Creator Tool'] = 'Sketch';
         } else if (svgText.includes('Figma')) {
-            metadata['Detected Creator'] = 'Figma';
+            metadata['Creator Tool'] = 'Figma';
         }
 
     } catch (e) {
@@ -1776,6 +1796,24 @@ function extractEpsMetadata(arrayBuffer) {
                 metadata[key] = val;
             }
         }
+    }
+
+    // PDF Info Dictionary (For modern .ai files and PDF-based EPS)
+    const pdfCreatorMatch = headerText.match(/\/Creator\s*\(([^)]+)\)/);
+    if (pdfCreatorMatch && !metadata['Creator']) {
+        metadata['Creator'] = pdfCreatorMatch[1].trim();
+    }
+    const pdfAuthorMatch = headerText.match(/\/Author\s*\(([^)]+)\)/);
+    if (pdfAuthorMatch && !metadata['For (Author)']) {
+        metadata['For (Author)'] = pdfAuthorMatch[1].trim();
+    }
+    const pdfProducerMatch = headerText.match(/\/Producer\s*\(([^)]+)\)/);
+    if (pdfProducerMatch) {
+        metadata['PDF Producer'] = pdfProducerMatch[1].trim();
+    }
+    const aiCreatorVerMatch = headerText.match(/%AI\d+_CreatorVersion:\s*([^\r\n]+)/);
+    if (aiCreatorVerMatch) {
+        metadata['AI Creator Version'] = aiCreatorVerMatch[1].trim();
     }
 
     // 3. AI-specific structural info (read-only informational)
@@ -2674,14 +2712,26 @@ async function processVideo(fileObj, mode) {
     return new Blob([cleanedBuffer], { type: fileObj.type || 'video/mp4' });
 }
 
-function injectEpsCreatorAndForString(arrayBuffer, softwareStr, ownerName) {
+function getIllustratorMajorVersion(versionYear) {
+    if (window.getIllustratorMajorVersion) return window.getIllustratorMajorVersion(versionYear);
+    const v = String(versionYear || "2024").trim();
+    const map = {
+        "2015": "19", "2016": "20", "2017": "21", "2018": "22", "2019": "23",
+        "2020": "24", "2021": "25", "2022": "26", "2023": "27", "2024": "28",
+        "2025": "29", "2026": "30"
+    };
+    return map[v] || "28";
+}
+
+function injectEpsCreatorAndForString(arrayBuffer, softwareStr, ownerName, aiVersion) {
     if (!arrayBuffer || arrayBuffer.byteLength < 16) return arrayBuffer;
     const uint8 = new Uint8Array(arrayBuffer.slice(0));
+    const majorVer = getIllustratorMajorVersion(aiVersion);
 
-    // 1. Inject softwareStr into %%Creator:
+    // 1. Standard PostScript EPS Header: %%Creator:
     if (softwareStr) {
         const prefix = '%%Creator:';
-        const idx = indexOfAsciiBytes(uint8, prefix, 0, Math.min(uint8.length, 65536));
+        const idx = indexOfAsciiBytes(uint8, prefix, 0, Math.min(uint8.length, 131072));
         if (idx !== -1) {
             let lineEnd = idx;
             while (lineEnd < uint8.length && uint8[lineEnd] !== 0x0A && uint8[lineEnd] !== 0x0D) {
@@ -2689,21 +2739,112 @@ function injectEpsCreatorAndForString(arrayBuffer, softwareStr, ownerName) {
             }
             const valStart = idx + prefix.length;
             const availableSpace = lineEnd - valStart;
-            const newStr = ' ' + softwareStr;
-            const encoded = new TextEncoder().encode(newStr);
-            if (encoded.length <= availableSpace) {
+
+            const candidates = [
+                ' ' + softwareStr,
+                ' ' + softwareStr.replace(/\s*\(Windows\)/i, ''),
+                ` Adobe Illustrator ${majorVer}.0`,
+                ` Illustrator ${majorVer}.0 (Win)`,
+                ` Illustrator ${majorVer}.0`,
+                ` AI ${majorVer}.0`
+            ];
+
+            let chosenCandidate = null;
+            for (const cand of candidates) {
+                const enc = new TextEncoder().encode(cand);
+                if (enc.length <= availableSpace) {
+                    chosenCandidate = cand;
+                    break;
+                }
+            }
+
+            if (!chosenCandidate && availableSpace > 5) {
+                chosenCandidate = (' ' + softwareStr).substring(0, availableSpace);
+            }
+
+            if (chosenCandidate) {
+                const encoded = new TextEncoder().encode(chosenCandidate);
                 uint8.set(encoded, valStart);
                 for (let i = valStart + encoded.length; i < lineEnd; i++) {
-                    uint8[i] = 0x20; // pad remainder with spaces so byte count & offsets never change
+                    uint8[i] = 0x20; // pad remainder with spaces so byte count never changes
                 }
             }
         }
     }
 
-    // 2. Inject ownerName / PC Name into %%For:
+    // 2. PDF-based AI and PDF Stream Header: /Creator (...)
+    const pdfCreatorPrefix = '/Creator';
+    const pdfIdx = indexOfAsciiBytes(uint8, pdfCreatorPrefix, 0, Math.min(uint8.length, 131072));
+    if (pdfIdx !== -1) {
+        let parenOpen = pdfIdx + pdfCreatorPrefix.length;
+        while (parenOpen < uint8.length && uint8[parenOpen] !== 0x28 && (uint8[parenOpen] === 0x20 || uint8[parenOpen] === 0x0A || uint8[parenOpen] === 0x0D)) {
+            parenOpen++;
+        }
+        if (parenOpen < uint8.length && uint8[parenOpen] === 0x28) {
+            let parenClose = parenOpen + 1;
+            while (parenClose < uint8.length && uint8[parenClose] !== 0x29 && uint8[parenClose] !== 0x0A && uint8[parenClose] !== 0x0D) {
+                parenClose++;
+            }
+            if (parenClose < uint8.length && uint8[parenClose] === 0x29) {
+                const valStart = parenOpen + 1;
+                const availableSpace = parenClose - valStart;
+
+                const candidates = [
+                    softwareStr,
+                    softwareStr.replace(/\s*\(Windows\)/i, ''),
+                    `Adobe Illustrator ${majorVer}.0`,
+                    `Illustrator ${majorVer}.0`,
+                    `AI ${majorVer}.0`
+                ];
+
+                let chosenCandidate = null;
+                for (const cand of candidates) {
+                    const enc = new TextEncoder().encode(cand);
+                    if (enc.length <= availableSpace) {
+                        chosenCandidate = cand;
+                        break;
+                    }
+                }
+                if (!chosenCandidate && availableSpace > 4) {
+                    chosenCandidate = softwareStr.substring(0, availableSpace);
+                }
+                if (chosenCandidate) {
+                    const encoded = new TextEncoder().encode(chosenCandidate);
+                    uint8.set(encoded, valStart);
+                    for (let i = valStart + encoded.length; i < parenClose; i++) {
+                        uint8[i] = 0x20;
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. Illustrator Version Structural Comments: %AI8_CreatorVersion: and %AI9_CreatorVersion:
+    const versionPrefixes = ['%AI8_CreatorVersion:', '%AI9_CreatorVersion:'];
+    for (const vPrefix of versionPrefixes) {
+        const idx = indexOfAsciiBytes(uint8, vPrefix, 0, Math.min(uint8.length, 131072));
+        if (idx !== -1) {
+            let lineEnd = idx;
+            while (lineEnd < uint8.length && uint8[lineEnd] !== 0x0A && uint8[lineEnd] !== 0x0D) {
+                lineEnd++;
+            }
+            const valStart = idx + vPrefix.length;
+            const availableSpace = lineEnd - valStart;
+            const verStr = ` ${majorVer}.0.0`;
+            const encoded = new TextEncoder().encode(verStr);
+            if (encoded.length <= availableSpace) {
+                uint8.set(encoded, valStart);
+                for (let i = valStart + encoded.length; i < lineEnd; i++) {
+                    uint8[i] = 0x20;
+                }
+            }
+        }
+    }
+
+    // 4. PostScript DSC Owner: %%For:
     if (ownerName && ownerName.trim()) {
         const prefix = '%%For:';
-        const idx = indexOfAsciiBytes(uint8, prefix, 0, Math.min(uint8.length, 65536));
+        const idx = indexOfAsciiBytes(uint8, prefix, 0, Math.min(uint8.length, 131072));
         if (idx !== -1) {
             let lineEnd = idx;
             while (lineEnd < uint8.length && uint8[lineEnd] !== 0x0A && uint8[lineEnd] !== 0x0D) {
@@ -2728,6 +2869,39 @@ function injectEpsCreatorAndForString(arrayBuffer, softwareStr, ownerName) {
         }
     }
 
+    // 5. PDF-based AI Owner: /Author (...)
+    if (ownerName && ownerName.trim()) {
+        const pdfAuthorPrefix = '/Author';
+        const pdfIdx = indexOfAsciiBytes(uint8, pdfAuthorPrefix, 0, Math.min(uint8.length, 131072));
+        if (pdfIdx !== -1) {
+            let parenOpen = pdfIdx + pdfAuthorPrefix.length;
+            while (parenOpen < uint8.length && uint8[parenOpen] !== 0x28 && (uint8[parenOpen] === 0x20 || uint8[parenOpen] === 0x0A || uint8[parenOpen] === 0x0D)) {
+                parenOpen++;
+            }
+            if (parenOpen < uint8.length && uint8[parenOpen] === 0x28) {
+                let parenClose = parenOpen + 1;
+                while (parenClose < uint8.length && uint8[parenClose] !== 0x29 && uint8[parenClose] !== 0x0A && uint8[parenClose] !== 0x0D) {
+                    parenClose++;
+                }
+                if (parenClose < uint8.length && uint8[parenClose] === 0x29) {
+                    const valStart = parenOpen + 1;
+                    const availableSpace = parenClose - valStart;
+                    const cleanOwner = ownerName.trim();
+                    let encoded = new TextEncoder().encode(cleanOwner);
+                    if (encoded.length > availableSpace && availableSpace > 2) {
+                        encoded = new TextEncoder().encode(cleanOwner.substring(0, availableSpace));
+                    }
+                    if (encoded.length <= availableSpace) {
+                        uint8.set(encoded, valStart);
+                        for (let i = valStart + encoded.length; i < parenClose; i++) {
+                            uint8[i] = 0x20;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     return uint8.buffer;
 }
 
@@ -2744,15 +2918,39 @@ function processVector(fileObj, mode) {
             const prof = window.getCustomProfile ? window.getCustomProfile(profKey) : null;
             const aiVersion = prof ? (prof.aiVersion || prof.version || "2024") : "2024";
             const ownerName = prof ? (prof.name || "").trim() : "";
-            if (window.getSoftwareString) {
-                const softwareStr = window.getSoftwareString("Illustrator", aiVersion);
-                let metaElements = `<meta name="generator" content="${escapeHtml(softwareStr)}" />`;
-                if (ownerName) {
-                    metaElements += `\n    <meta name="author" content="${escapeHtml(ownerName)}" />\n    <dc:creator xmlns:dc="http://purl.org/dc/elements/1.1/"><rdf:Seq xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:li>${escapeHtml(ownerName)}</rdf:li></rdf:Seq></dc:creator>`;
-                }
-                if (!cleanText.includes('<meta name="generator"')) {
-                    cleanText = cleanText.replace(/<svg\b([^>]*)>/i, `<svg$1>\n  <metadata>\n    ${metaElements}\n  </metadata>`);
-                }
+            const majorVer = getIllustratorMajorVersion(aiVersion);
+            const softwareStr = window.getSoftwareString ? window.getSoftwareString("Illustrator", aiVersion) : `Adobe Illustrator ${majorVer}.0 (Windows)`;
+            const generatorComment = `<!-- Generator: Adobe Illustrator ${majorVer}.0.0, SVG Export Plug-In . SVG Version: 6.00 Build 0)  -->`;
+
+            // 1. Replace or prepend Illustrator Generator XML comment
+            if (/<!--\s*Generator:[\s\S]*?-->/i.test(cleanText)) {
+                cleanText = cleanText.replace(/<!--\s*Generator:[\s\S]*?-->/i, generatorComment);
+            } else {
+                cleanText = cleanText.replace(/(<svg\b)/i, `${generatorComment}\n$1`);
+            }
+
+            // 2. Update or insert <meta name="generator"> and <meta name="author">
+            let metaElements = `<meta name="generator" content="${escapeHtml(softwareStr)}" />`;
+            if (ownerName) {
+                metaElements += `\n    <meta name="author" content="${escapeHtml(ownerName)}" />\n    <dc:creator xmlns:dc="http://purl.org/dc/elements/1.1/"><rdf:Seq xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:li>${escapeHtml(ownerName)}</rdf:li></rdf:Seq></dc:creator>`;
+            }
+
+            if (cleanText.includes('<meta name="generator"')) {
+                cleanText = cleanText.replace(/<meta\s+name=["']generator["'][^>]*>/gi, `<meta name="generator" content="${escapeHtml(softwareStr)}" />`);
+            }
+            if (ownerName && cleanText.includes('<meta name="author"')) {
+                cleanText = cleanText.replace(/<meta\s+name=["']author["'][^>]*>/gi, `<meta name="author" content="${escapeHtml(ownerName)}" />`);
+            }
+
+            if (!cleanText.includes('<metadata>') && !cleanText.includes('<metadata ')) {
+                cleanText = cleanText.replace(/<svg\b([^>]*)>/i, `<svg$1>\n  <metadata>\n    ${metaElements}\n  </metadata>`);
+            } else if (!cleanText.includes('<meta name="generator"')) {
+                cleanText = cleanText.replace(/<metadata\b([^>]*)>/i, `<metadata$1>\n    ${metaElements}`);
+            }
+
+            // 3. Update embedded XMP CreatorTool if present
+            if (cleanText.includes('<xmp:CreatorTool>')) {
+                cleanText = cleanText.replace(/<xmp:CreatorTool>[\s\S]*?<\/xmp:CreatorTool>/gi, `<xmp:CreatorTool>${escapeHtml(softwareStr)}</xmp:CreatorTool>`);
             }
         }
         return new Blob([cleanText], { type: 'image/svg+xml' });
@@ -2766,7 +2964,7 @@ function processVector(fileObj, mode) {
             const ownerName = prof ? (prof.name || "").trim() : "";
             if (window.getSoftwareString) {
                 const softwareStr = window.getSoftwareString("Illustrator", aiVersion);
-                cleanedBuffer = injectEpsCreatorAndForString(cleanedBuffer, softwareStr, ownerName);
+                cleanedBuffer = injectEpsCreatorAndForString(cleanedBuffer, softwareStr, ownerName, aiVersion);
             }
         }
         return new Blob([cleanedBuffer], { type: fileObj.type || 'application/postscript' });

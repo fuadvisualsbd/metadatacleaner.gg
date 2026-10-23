@@ -112,6 +112,26 @@ function sanitizeProfile(p, fallbackId) {
     };
 }
 
+// Helper: Map Illustrator Year to Internal Major Version Number (e.g. 2024 -> 28)
+export function getIllustratorMajorVersion(versionYear) {
+    const v = String(versionYear || "2024").trim();
+    const map = {
+        "2015": "19",
+        "2016": "20",
+        "2017": "21",
+        "2018": "22",
+        "2019": "23",
+        "2020": "24",
+        "2021": "25",
+        "2022": "26",
+        "2023": "27",
+        "2024": "28",
+        "2025": "29",
+        "2026": "30"
+    };
+    return map[v] || "28";
+}
+
 // Helper: Map Software + Version Year (2015-2026) to exact commercial Adobe strings
 export function getSoftwareString(software, version) {
     const v = String(version);
@@ -733,6 +753,7 @@ window.getCustomProfile = function(profileKey) {
 };
 
 window.getSoftwareString = getSoftwareString;
+window.getIllustratorMajorVersion = getIllustratorMajorVersion;
 
 // Initialize on Load
 (function init() {
