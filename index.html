@@ -42,11 +42,16 @@
 
                 <!-- Google Auth & User Profile Container -->
                 <div id="authContainer" class="auth-container">
-                    <button id="googleLoginBtn" class="btn btn-auth btn-sm" title="Sign in with Google to sync your profiles across PCs">
+                    <button id="googleLoginBtn" class="btn btn-auth btn-sm" title="Sign in with Google to access MetaCleaner Pro">
                         <i class='bx bxl-google'></i> <span>Google Sign In</span>
                     </button>
                     
                     <div id="userProfileBar" class="user-profile-bar" style="display: none;">
+                        <!-- Admin Panel Shortcut (Shown only for authorized admins) -->
+                        <button id="adminPanelBtn" class="btn btn-sm btn-admin" style="display: none;" title="Open Admin Console">
+                            <i class='bx bxs-shield'></i> <span>Admin Panel</span>
+                        </button>
+
                         <button id="openProfilesModalBtn" class="btn btn-sm btn-profile-manage" title="Manage Custom Multi-PC Profiles">
                             <i class='bx bx-devices'></i> <span>3 Profiles</span>
                         </button>
@@ -255,6 +260,109 @@
                 <button type="button" class="btn btn-primary" id="saveProfilesBtn">
                     <i class='bx bx-save'></i> Save Profile Settings
                 </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Mandatory Google Login Wall (No Offline Access) -->
+    <div id="loginWallOverlay" class="login-wall-overlay" style="display: none;">
+        <div class="login-wall-card glass-panel">
+            <div class="login-wall-icon">
+                <i class='bx bx-lock-alt'></i>
+            </div>
+            <h2>Authentication Required</h2>
+            <p class="login-wall-desc">Offline access is disabled. Please sign in with your Google account to access <strong>MetaCleaner Pro</strong> and your synchronized <strong>Multi-PC Device Profiles</strong>.</p>
+
+            <div class="login-wall-features">
+                <div class="wall-feature-item">
+                    <i class='bx bx-check-shield'></i>
+                    <span><strong>100% Client-Side Privacy:</strong> Your files never upload to any server.</span>
+                </div>
+                <div class="wall-feature-item">
+                    <i class='bx bx-devices'></i>
+                    <span><strong>3 Multi-PC Device Profiles:</strong> Custom Photoshop & Illustrator versions (2015-2026).</span>
+                </div>
+                <div class="wall-feature-item">
+                    <i class='bx bx-cloud'></i>
+                    <span><strong>Cloud Synchronization:</strong> Device profiles saved securely to your Google account.</span>
+                </div>
+            </div>
+
+            <button id="loginWallGoogleBtn" class="btn btn-primary btn-google-wall">
+                <i class='bx bxl-google' style="font-size: 1.4rem;"></i>
+                <span>Continue with Google</span>
+            </button>
+
+            <div class="login-wall-note">
+                <i class='bx bx-info-circle'></i> Authorized for professional stock contributors & digital artists.
+            </div>
+        </div>
+    </div>
+
+    <!-- Admin Panel Modal (Visible only to authorized admins) -->
+    <div id="adminPanelModal" class="modal-overlay" style="display: none;">
+        <div class="modal-card modal-card-lg glass-panel">
+            <div class="modal-header">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <div class="modal-icon-badge" style="background: rgba(184, 58, 58, 0.12); color: var(--danger);">
+                        <i class='bx bxs-shield'></i>
+                    </div>
+                    <div>
+                        <h2>MetaCleaner Pro — Admin Console</h2>
+                        <p class="modal-subtext">Registered Google contributors, login activity, and profile telemetry.</p>
+                    </div>
+                </div>
+                <button id="closeAdminPanelBtn" class="modal-close-btn">&times;</button>
+            </div>
+
+            <!-- Admin Stats Row -->
+            <div class="admin-stats-row">
+                <div class="admin-stat-card">
+                    <span class="stat-number" id="adminTotalUsersCount">0</span>
+                    <span class="stat-label">Registered Users</span>
+                </div>
+                <div class="admin-stat-card">
+                    <span class="stat-number" id="adminTotalAdminsCount">0</span>
+                    <span class="stat-label">Admin Accounts</span>
+                </div>
+                <div class="admin-stat-card">
+                    <span class="stat-number" style="color: var(--success);"><i class='bx bx-check-circle'></i></span>
+                    <span class="stat-label">Firestore Status: Active</span>
+                </div>
+            </div>
+
+            <!-- Admin Search & Filter -->
+            <div class="admin-toolbar">
+                <div class="admin-search-wrap">
+                    <i class='bx bx-search'></i>
+                    <input type="text" id="adminUserSearch" class="form-input" placeholder="Search contributors by name or email...">
+                </div>
+                <button id="adminRefreshBtn" class="btn btn-sm btn-secondary" title="Reload live from Firestore">
+                    <i class='bx bx-refresh'></i> Refresh
+                </button>
+            </div>
+
+            <!-- Admin Users Table -->
+            <div class="admin-table-container">
+                <table class="meta-table admin-table">
+                    <thead>
+                        <tr>
+                            <th>Contributor</th>
+                            <th>Email Address</th>
+                            <th>Last Active</th>
+                            <th>Profiles Summary</th>
+                            <th>Role</th>
+                        </tr>
+                    </thead>
+                    <tbody id="adminUsersTableBody">
+                        <!-- User rows injected dynamically by auth-profiles.js -->
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="modal-footer" style="justify-content: space-between; align-items: center;">
+                <span style="font-size: 0.78rem; color: var(--text-muted);"><i class='bx bxs-lock-alt'></i> Admin Access Restricted to Authorized Admins.</span>
+                <button type="button" class="btn btn-secondary btn-sm" onclick="document.getElementById('adminPanelModal').style.display='none'">Close Console</button>
             </div>
         </div>
     </div>

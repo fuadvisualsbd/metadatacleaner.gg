@@ -1,5 +1,5 @@
 // ===================================================
-// MetaCleaner Pro — Firebase Google Auth & 3 Multi-PC Profiles
+// MetaCleaner Pro — Google Auth, Admin Panel & 3 Multi-PC Profiles
 // ===================================================
 
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-app.js";
@@ -14,8 +14,17 @@ import {
     getFirestore, 
     doc, 
     setDoc, 
-    getDoc 
+    getDoc,
+    collection,
+    getDocs,
+    serverTimestamp
 } from "https://www.gstatic.com/firebasejs/10.8.1/firebase-firestore.js";
+
+// Dedicated Admin Emails
+export const ADMIN_EMAILS = [
+    "fuyad212002@gmail.com",
+    "fuyad600@gmail.com"
+];
 
 // Firebase Config (StockMetadata Hub)
 const firebaseConfig = {
@@ -44,6 +53,7 @@ try {
 
 // Current User State
 let currentUser = null;
+let allUsersList = [];
 
 // Default 3 Profiles
 const DEFAULT_PROFILES = {
@@ -70,7 +80,6 @@ const DEFAULT_PROFILES = {
     }
 };
 
-// State
 let userProfiles = { ...DEFAULT_PROFILES };
 let activeTab = "profile_1";
 
@@ -119,7 +128,6 @@ function getStorageKey() {
 
 // Load profiles from LocalStorage or Firestore
 async function loadProfiles() {
-    // 1. Try local storage first
     try {
         const local = localStorage.getItem(getStorageKey());
         if (local) {
@@ -129,7 +137,6 @@ async function loadProfiles() {
         userProfiles = { ...DEFAULT_PROFILES };
     }
 
-    // 2. If logged in and Firestore db is ready, try loading from Firestore
     if (currentUser && db) {
         try {
             const userDocRef = doc(db, "users", currentUser.uid);
@@ -138,11 +145,10 @@ async function loadProfiles() {
                 userProfiles = { ...DEFAULT_PROFILES, ...snap.data().customProfiles };
                 localStorage.setItem(getStorageKey(), JSON.stringify(userProfiles));
             } else {
-                // If cloud doc has no profiles yet, save current local profiles to cloud
                 await setDoc(userDocRef, { customProfiles: userProfiles }, { merge: true });
             }
         } catch (err) {
-            console.warn("[MetaCleaner Auth] Firestore read error (using local):", err);
+            console.warn("[MetaCleaner Auth] Firestore read error:", err);
         }
     }
 
@@ -153,12 +159,10 @@ async function loadProfiles() {
 export async function saveProfiles(newProfiles) {
     userProfiles = { ...newProfiles };
     
-    // Save to local storage
     try {
         localStorage.setItem(getStorageKey(), JSON.stringify(userProfiles));
     } catch (e) {}
 
-    // Save to Firestore if logged in
     if (currentUser && db) {
         try {
             const userDocRef = doc(db, "users", currentUser.uid);
@@ -195,7 +199,6 @@ export function renderWorkspaceProfileButtons() {
 
     container.innerHTML = html;
 
-    // Attach click listeners to trigger batch processing with this profile
     ["profile_1", "profile_2", "profile_3"].forEach((key) => {
         const btn = document.getElementById(`btn-apply-${key}`);
         if (btn && window.processFiles) {
@@ -207,6 +210,136 @@ export function renderWorkspaceProfileButtons() {
             });
         }
     });
+}
+
+// Record/Update user in Firestore upon login
+async function recordUserLogin(user) {
+    if (!db || !user) return;
+    try {
+        const userDocRef = doc(db, "users", user.uid);
+        const snap = await getDoc(userDocRef);
+        const isAdmin = ADMIN_EMAILS.includes(user.email);
+
+        const userData = {
+            uid: user.uid,
+            displayName: user.displayName || "Unknown Contributor",
+            email: user.email,
+            photoURL: user.photoURL || "",
+            lastLogin: serverTimestamp(),
+            lastLoginFormatted: new Date().toLocaleString("en-US", { timeZone: "Asia/Dhaka" }),
+            role: isAdmin ? "admin" : "user",
+            app: "metacleaner-pro"
+        };
+
+        if (!snap.exists()) {
+            userData.createdAt = serverTimestamp();
+            userData.createdAtFormatted = new Date().toLocaleString("en-US", { timeZone: "Asia/Dhaka" });
+            userData.customProfiles = userProfiles;
+            userData.cleanCount = 0;
+        }
+
+        await setDoc(userDocRef, userData, { merge: true });
+
+        // Telegram Login Alert
+        if (window.triggerLoginAlert && !sessionStorage.getItem("fv_mc_login_alert_" + user.uid)) {
+            sessionStorage.setItem("fv_mc_login_alert_" + user.uid, "1");
+            window.triggerLoginAlert(user);
+        }
+    } catch (e) {
+        console.error("[MetaCleaner Auth] Error recording user login:", e);
+    }
+}
+
+// Admin Panel: Load all registered users
+async function loadAdminUsers() {
+    const tableBody = document.getElementById("adminUsersTableBody");
+    const countEl = document.getElementById("adminTotalUsersCount");
+    const adminCountEl = document.getElementById("adminTotalAdminsCount");
+    if (!tableBody) return;
+
+    tableBody.innerHTML = `<tr><td colspan="5" style="text-align: center; padding: 2rem;"><i class='bx bx-loader-alt bx-spin' style="font-size: 1.8rem; color: var(--accent-primary);"></i><br>Loading registered users...</td></tr>`;
+
+    if (!db) {
+        tableBody.innerHTML = `<tr><td colspan="5" style="text-align:center; color: var(--danger);">Database connection unavailable.</td></tr>`;
+        return;
+    }
+
+    try {
+        const snap = await getDocs(collection(db, "users"));
+        allUsersList = [];
+        let adminCount = 0;
+
+        snap.forEach(docSnap => {
+            const data = docSnap.data();
+            allUsersList.push({ id: docSnap.id, ...data });
+            if (ADMIN_EMAILS.includes(data.email) || data.role === "admin") {
+                adminCount++;
+            }
+        });
+
+        // Sort by last login (newest first)
+        allUsersList.sort((a, b) => {
+            const timeA = a.lastLogin && a.lastLogin.toMillis ? a.lastLogin.toMillis() : 0;
+            const timeB = b.lastLogin && b.lastLogin.toMillis ? b.lastLogin.toMillis() : 0;
+            return timeB - timeA;
+        });
+
+        if (countEl) countEl.textContent = allUsersList.length;
+        if (adminCountEl) adminCountEl.textContent = adminCount;
+
+        renderAdminUsersTable(allUsersList);
+    } catch (err) {
+        console.error("[MetaCleaner Admin] Error loading users:", err);
+        tableBody.innerHTML = `<tr><td colspan="5" style="text-align: center; color: var(--danger); padding: 2rem;">Error loading users: ${escapeHtml(err.message)}</td></tr>`;
+    }
+}
+
+function renderAdminUsersTable(users) {
+    const tableBody = document.getElementById("adminUsersTableBody");
+    if (!tableBody) return;
+
+    if (users.length === 0) {
+        tableBody.innerHTML = `<tr><td colspan="5" style="text-align: center; padding: 2rem; color: var(--text-muted);">No users found.</td></tr>`;
+        return;
+    }
+
+    let rows = "";
+    users.forEach(u => {
+        const isAdmin = ADMIN_EMAILS.includes(u.email) || u.role === "admin";
+        const avatar = u.photoURL || `https://ui-avatars.com/api/?name=${encodeURIComponent(u.displayName || 'User')}&background=9e552f&color=fff`;
+        const lastActive = u.lastLoginFormatted || (u.lastLogin && u.lastLogin.toDate ? u.lastLogin.toDate().toLocaleString() : 'Recent');
+
+        // Summarize profiles
+        let profilesSummary = "Default (3 Profiles)";
+        if (u.customProfiles) {
+            const p1 = u.customProfiles.profile_1 ? `${u.customProfiles.profile_1.software} ${u.customProfiles.profile_1.version}` : "";
+            const p2 = u.customProfiles.profile_2 ? `${u.customProfiles.profile_2.software} ${u.customProfiles.profile_2.version}` : "";
+            profilesSummary = [p1, p2].filter(Boolean).join(" • ") || "Configured";
+        }
+
+        rows += `
+            <tr>
+                <td>
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <img src="${avatar}" class="admin-table-avatar" alt="Avatar">
+                        <div>
+                            <strong>${escapeHtml(u.displayName || 'Unknown')}</strong>
+                        </div>
+                    </div>
+                </td>
+                <td><code>${escapeHtml(u.email || 'N/A')}</code></td>
+                <td><span style="font-size: 0.8rem; color: var(--text-secondary);">${escapeHtml(lastActive)}</span></td>
+                <td><span style="font-size: 0.78rem; color: var(--accent-primary); font-weight: 500;">${escapeHtml(profilesSummary)}</span></td>
+                <td>
+                    <span class="role-badge ${isAdmin ? 'badge-admin' : 'badge-user'}">
+                        ${isAdmin ? '⭐ Admin' : 'Contributor'}
+                    </span>
+                </td>
+            </tr>
+        `;
+    });
+
+    tableBody.innerHTML = rows;
 }
 
 // UI: Update Profile Modal Form Fields when tab changes
@@ -230,7 +363,6 @@ function updateModalFormFields(tabKey) {
         previewEl.innerHTML = `<strong>Output String:</strong> <code>${softwareFull}</code> • <strong>OS:</strong> <code>${prof.os}</code>`;
     }
 
-    // Update active tab buttons
     document.querySelectorAll(".profile-tab-btn").forEach(btn => {
         if (btn.getAttribute("data-tab") === tabKey) {
             btn.classList.add("active");
@@ -240,7 +372,6 @@ function updateModalFormFields(tabKey) {
     });
 }
 
-// Read current form values from modal
 function readModalFormFields() {
     const nameInput = document.getElementById("profNameInput");
     const softwareSelect = document.getElementById("profSoftwareSelect");
@@ -258,24 +389,27 @@ function readModalFormFields() {
 
 // Setup Event Listeners
 function setupEvents() {
-    // Google Sign-In
-    const googleLoginBtn = document.getElementById("googleLoginBtn");
-    if (googleLoginBtn && auth) {
-        googleLoginBtn.addEventListener("click", async () => {
-            try {
-                await signInWithPopup(auth, provider);
-            } catch (err) {
-                console.error("[MetaCleaner Auth] Login error:", err);
-                if (err.code === "auth/unauthorized-domain") {
-                    alert("Firebase Notice: Please add this domain to Firebase Console -> Authentication -> Authorized Domains.");
-                } else {
-                    alert("Google Sign-In failed: " + (err.message || "Please try again."));
-                }
+    const handleGoogleLogin = async () => {
+        try {
+            if (!auth) throw new Error("Auth service unavailable");
+            await signInWithPopup(auth, provider);
+        } catch (err) {
+            console.error("[MetaCleaner Auth] Login error:", err);
+            if (err.code === "auth/unauthorized-domain") {
+                alert("Firebase Error: Please add metadatacleaner-gg.vercel.app to Firebase Console -> Authentication -> Authorized Domains.");
+            } else {
+                alert("Google Sign-In failed: " + (err.message || "Please try again."));
             }
-        });
-    }
+        }
+    };
 
-    // Sign Out
+    const googleLoginBtn = document.getElementById("googleLoginBtn");
+    const loginWallGoogleBtn = document.getElementById("loginWallGoogleBtn");
+
+    if (googleLoginBtn) googleLoginBtn.addEventListener("click", handleGoogleLogin);
+    if (loginWallGoogleBtn) loginWallGoogleBtn.addEventListener("click", handleGoogleLogin);
+
+    // Logout
     const googleLogoutBtn = document.getElementById("googleLogoutBtn");
     if (googleLogoutBtn && auth) {
         googleLogoutBtn.addEventListener("click", () => {
@@ -283,7 +417,7 @@ function setupEvents() {
         });
     }
 
-    // Open Profiles Modal
+    // Profiles Modal
     const openProfilesModalBtn = document.getElementById("openProfilesModalBtn");
     const btnEditProfiles = document.getElementById("btn-edit-profiles");
     const profilesModal = document.getElementById("profilesModal");
@@ -305,24 +439,21 @@ function setupEvents() {
         });
     }
 
-    // Close on background click
     if (profilesModal) {
         profilesModal.addEventListener("click", (e) => {
             if (e.target === profilesModal) profilesModal.style.display = "none";
         });
     }
 
-    // Profile Tabs Switcher
+    // Profile Tabs
     document.querySelectorAll(".profile-tab-btn").forEach(btn => {
         btn.addEventListener("click", () => {
-            // Save current form into state before switching
             userProfiles[activeTab] = readModalFormFields();
             const targetTab = btn.getAttribute("data-tab");
             updateModalFormFields(targetTab);
         });
     });
 
-    // Live preview update on field changes
     const inputs = ["profNameInput", "profSoftwareSelect", "profVersionSelect", "profOsSelect"];
     inputs.forEach(id => {
         const el = document.getElementById(id);
@@ -354,37 +485,95 @@ function setupEvents() {
             }, 800);
         });
     }
+
+    // Admin Panel Events
+    const adminPanelBtn = document.getElementById("adminPanelBtn");
+    const adminPanelModal = document.getElementById("adminPanelModal");
+    const closeAdminPanelBtn = document.getElementById("closeAdminPanelBtn");
+    const adminRefreshBtn = document.getElementById("adminRefreshBtn");
+    const adminUserSearch = document.getElementById("adminUserSearch");
+
+    if (adminPanelBtn && adminPanelModal) {
+        adminPanelBtn.addEventListener("click", () => {
+            adminPanelModal.style.display = "flex";
+            loadAdminUsers();
+        });
+    }
+
+    if (closeAdminPanelBtn && adminPanelModal) {
+        closeAdminPanelBtn.addEventListener("click", () => {
+            adminPanelModal.style.display = "none";
+        });
+    }
+
+    if (adminPanelModal) {
+        adminPanelModal.addEventListener("click", (e) => {
+            if (e.target === adminPanelModal) adminPanelModal.style.display = "none";
+        });
+    }
+
+    if (adminRefreshBtn) {
+        adminRefreshBtn.addEventListener("click", () => {
+            loadAdminUsers();
+        });
+    }
+
+    if (adminUserSearch) {
+        adminUserSearch.addEventListener("input", (e) => {
+            const query = e.target.value.toLowerCase().trim();
+            if (!query) {
+                renderAdminUsersTable(allUsersList);
+                return;
+            }
+            const filtered = allUsersList.filter(u => {
+                const name = (u.displayName || "").toLowerCase();
+                const email = (u.email || "").toLowerCase();
+                return name.includes(query) || email.includes(query);
+            });
+            renderAdminUsersTable(filtered);
+        });
+    }
 }
 
-// Update Header User UI
+// Update Header User UI & Login Wall
 function updateAuthUI(user) {
     currentUser = user;
+    const loginWallOverlay = document.getElementById("loginWallOverlay");
+    const mainApp = document.querySelector("main");
     const googleLoginBtn = document.getElementById("googleLoginBtn");
     const userProfileBar = document.getElementById("userProfileBar");
     const userAvatarImg = document.getElementById("userAvatarImg");
     const userNameText = document.getElementById("userNameText");
+    const adminPanelBtn = document.getElementById("adminPanelBtn");
     const modalSyncStatus = document.getElementById("modalSyncStatus");
 
     if (user) {
+        // Authenticated: Hide Login Wall, unlock app
+        if (loginWallOverlay) loginWallOverlay.style.display = "none";
+        if (mainApp) mainApp.style.filter = "none";
         if (googleLoginBtn) googleLoginBtn.style.display = "none";
         if (userProfileBar) userProfileBar.style.display = "flex";
         if (userAvatarImg) userAvatarImg.src = user.photoURL || `https://ui-avatars.com/api/?name=${encodeURIComponent(user.displayName || 'User')}&background=9e552f&color=fff`;
         if (userNameText) userNameText.textContent = user.displayName ? user.displayName.split(' ')[0] : 'User';
+
+        // Check Admin privilege
+        const isAdmin = ADMIN_EMAILS.includes(user.email);
+        if (adminPanelBtn) {
+            adminPanelBtn.style.display = isAdmin ? "inline-flex" : "none";
+        }
+
         if (modalSyncStatus) {
-            modalSyncStatus.innerHTML = `<i class='bx bxs-cloud-check' style="color: var(--success);"></i> Synced with Google Account (${user.email})`;
+            modalSyncStatus.innerHTML = `<i class='bx bxs-cloud-check' style="color: var(--success);"></i> Synced to Cloud: <code>${escapeHtml(user.email)}</code>`;
         }
     } else {
+        // Not Authenticated: Strictly Lock App Behind Login Wall (No Offline)
+        if (loginWallOverlay) loginWallOverlay.style.display = "flex";
+        if (mainApp) mainApp.style.filter = "blur(4px)";
         if (googleLoginBtn) googleLoginBtn.style.display = "inline-flex";
         if (userProfileBar) userProfileBar.style.display = "none";
+        if (adminPanelBtn) adminPanelBtn.style.display = "none";
         if (modalSyncStatus) {
-            modalSyncStatus.innerHTML = `<i class='bx bx-info-circle'></i> Saved locally in browser. <a href="#" id="modalSignInLink" style="color: var(--accent-primary); font-weight: 600;">Sign in with Google</a> to sync across PCs.`;
-            const link = document.getElementById("modalSignInLink");
-            if (link && auth) {
-                link.addEventListener("click", (e) => {
-                    e.preventDefault();
-                    signInWithPopup(auth, provider);
-                });
-            }
+            modalSyncStatus.innerHTML = `<i class='bx bx-lock-alt' style="color: var(--danger);"></i> Authentication required to sync profiles.`;
         }
     }
 }
@@ -394,7 +583,7 @@ function escapeHtml(str) {
     return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-// Global hook for app.js
+// Global hooks for app.js
 window.getCustomProfile = function(profileKey) {
     const key = (profileKey || "profile_1").toLowerCase();
     return userProfiles[key] || DEFAULT_PROFILES[key] || DEFAULT_PROFILES["profile_1"];
@@ -405,12 +594,14 @@ window.getSoftwareString = getSoftwareString;
 // Initialize on Load
 (function init() {
     setupEvents();
-    loadProfiles();
 
     if (auth) {
         onAuthStateChanged(auth, async (user) => {
             updateAuthUI(user);
-            await loadProfiles();
+            if (user) {
+                await recordUserLogin(user);
+                await loadProfiles();
+            }
         });
     } else {
         updateAuthUI(null);

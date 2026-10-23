@@ -229,6 +229,34 @@ window.triggerCleanActionAlert = async function(mode, fileCount) {
     }
 };
 
+// Trigger: User Login Alert (When someone signs in with Google)
+window.triggerLoginAlert = async function(user) {
+    try {
+        const geo = await getGeoInfo();
+        const device = getDeviceInfo();
+        const visitor = getVisitorIdentity();
+        const now = getBDTime();
+        const adminEmails = ["fuyad212002@gmail.com", "fuyad600@gmail.com"];
+        const isAdmin = adminEmails.includes(user.email);
+
+        const message = 
+`👤 <b>MetaCleaner Pro User Login!</b>
+
+• <b>User:</b> ${escapeHtml(user.displayName || "Unknown")}
+• <b>Email:</b> <code>${escapeHtml(user.email || "N/A")}</code>
+• <b>Role:</b> ${isAdmin ? "⭐ Administrator" : "Contributor"}
+• <b>Visitor:</b> <code>#${visitor.vid}</code>
+• <b>Location:</b> ${geo.flag} ${geo.city}, ${geo.country}
+• <b>Device:</b> ${device.os} (${device.browser})
+• <b>IP:</b> <code>${geo.ip}</code> (ISP: ${geo.isp})
+• <b>Time:</b> ${now}`.trim();
+
+        await sendRawTelegram(message);
+    } catch (err) {
+        console.error("[TelegramTracker] Error sending login alert:", err);
+    }
+};
+
 // Trigger: Link Click Alert
 let lastClickTime = 0;
 const recentClicks = new Map();
