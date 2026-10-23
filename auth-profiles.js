@@ -28,12 +28,12 @@ export const ADMIN_EMAILS = [
 
 // Firebase Config (Dedicated MetaCleaner Pro Project)
 const firebaseConfig = {
-    apiKey: "AIzaSyCQjlIW8fdDGFuL5Qy_7lIqTen0h8yEzLg",
+    apiKey: "AIzaSyCQjlIW8fdDGfuL5Qy_7lIqTen0h8yEzLg",
     authDomain: "metadata-cleaner-69a95.firebaseapp.com",
     projectId: "metadata-cleaner-69a95",
     storageBucket: "metadata-cleaner-69a95.firebasestorage.app",
     messagingSenderId: "700518487065",
-    appId: "1:700518487065:web:a8a9096a6edfbc1c2f0608"
+    appId: "1:700518487065:web:a0a0096a5edfbc1c2f0688"
 };
 
 let app = null;
