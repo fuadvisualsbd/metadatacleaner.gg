@@ -1003,6 +1003,21 @@ header {
     box-shadow: 0 3px 12px rgba(158, 85, 47, 0.14);
 }
 
+.btn-profile-empty {
+    border-style: dashed !important;
+    background: rgba(158, 85, 47, 0.04) !important;
+    opacity: 0.88;
+    transition: all var(--transition-fast);
+}
+
+.btn-profile-empty:hover {
+    border-color: var(--accent-primary) !important;
+    background: rgba(158, 85, 47, 0.09) !important;
+    opacity: 1;
+    transform: translateY(-1px);
+    box-shadow: 0 3px 12px rgba(158, 85, 47, 0.14);
+}
+
 .btn-prof-title {
     font-size: 0.84rem;
     font-weight: 700;

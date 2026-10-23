@@ -1903,7 +1903,8 @@ function cleanEpsBuffer(arrayBuffer, mode) {
             } else {
                 for (const prefix of targetPrefixes) {
                     if (lineStr.startsWith(prefix)) {
-                        for (let k = pos + 1; k < lineEnd; k++) {
+                        const startBlank = (prefix === '%%For:' && mode !== 'ALL') ? (pos + prefix.length) : (pos + 1);
+                        for (let k = startBlank; k < lineEnd; k++) {
                             output[k] = 0x20; // ASCII space
                         }
                         break;
@@ -2395,6 +2396,7 @@ async function processImage(fileObj, mode) {
         const prof = window.getCustomProfile ? window.getCustomProfile(profKey) : null;
         const psVersion = prof ? (prof.psVersion || prof.version || "2024") : "2024";
         const osStr = prof ? (prof.os || "Windows 11") : "Windows 11";
+        const ownerName = prof ? (prof.name || "").trim() : "";
         let softwareStr = "Adobe Photoshop 25.0 (Windows)";
         if (window.getSoftwareString) {
             softwareStr = window.getSoftwareString("Photoshop", psVersion);
@@ -2419,6 +2421,9 @@ async function processImage(fileObj, mode) {
                 if (!exifObj["0th"]) exifObj["0th"] = {};
                 exifObj["0th"][piexif.ImageIFD.Software] = softwareStr;
                 exifObj["0th"][piexif.ImageIFD.HostComputer] = osStr;
+                if (ownerName) {
+                    exifObj["0th"][piexif.ImageIFD.Artist] = ownerName;
+                }
                 const exifBytes = piexif.dump(exifObj);
                 const inserted = piexif.insert(exifBytes, fullStr);
                 const newBytes = new Uint8Array(inserted.length);
@@ -2432,6 +2437,9 @@ async function processImage(fileObj, mode) {
                 const zeroth = {};
                 zeroth[piexif.ImageIFD.Software] = softwareStr;
                 zeroth[piexif.ImageIFD.HostComputer] = osStr;
+                if (ownerName) {
+                    zeroth[piexif.ImageIFD.Artist] = ownerName;
+                }
                 const exifObj = {"0th": zeroth};
                 const exifBytes = piexif.dump(exifObj);
                 finalDataURL = piexif.insert(exifBytes, cleanCanvasURL);
@@ -2440,8 +2448,13 @@ async function processImage(fileObj, mode) {
             try {
                 // Stock Safe clean first
                 const strippedBuf = stripPngC2pa(fileObj.originalArrayBuffer);
-                const withSoftware = await injectPngTextChunk(strippedBuf, "Software", softwareStr);
-                const res = await fetch(withSoftware);
+                let currentDataURL = await injectPngTextChunk(strippedBuf, "Software", softwareStr);
+                if (ownerName) {
+                    const resAuthor = await fetch(currentDataURL);
+                    const bufAuthor = await resAuthor.arrayBuffer();
+                    currentDataURL = await injectPngTextChunk(bufAuthor, "Author", ownerName);
+                }
+                const res = await fetch(currentDataURL);
                 const buf = await res.arrayBuffer();
                 finalDataURL = await injectPngXmpChunk(buf, softwareStr, osStr);
             } catch (e) {
@@ -2449,8 +2462,13 @@ async function processImage(fileObj, mode) {
                 let cleanDataURL = await cleanViaCanvas(fileObj);
                 const res = await fetch(cleanDataURL);
                 let buf = await res.arrayBuffer();
-                const withSoftware = await injectPngTextChunk(buf, "Software", softwareStr);
-                const res2 = await fetch(withSoftware);
+                let currentDataURL = await injectPngTextChunk(buf, "Software", softwareStr);
+                if (ownerName) {
+                    const resAuthor = await fetch(currentDataURL);
+                    const bufAuthor = await resAuthor.arrayBuffer();
+                    currentDataURL = await injectPngTextChunk(bufAuthor, "Author", ownerName);
+                }
+                const res2 = await fetch(currentDataURL);
                 const buf2 = await res2.arrayBuffer();
                 finalDataURL = await injectPngXmpChunk(buf2, softwareStr, osStr);
             }
@@ -2656,27 +2674,60 @@ async function processVideo(fileObj, mode) {
     return new Blob([cleanedBuffer], { type: fileObj.type || 'video/mp4' });
 }
 
-function injectEpsCreatorString(arrayBuffer, softwareStr) {
+function injectEpsCreatorAndForString(arrayBuffer, softwareStr, ownerName) {
     if (!arrayBuffer || arrayBuffer.byteLength < 16) return arrayBuffer;
     const uint8 = new Uint8Array(arrayBuffer.slice(0));
-    const prefix = '%%Creator:';
-    const idx = indexOfAsciiBytes(uint8, prefix, 0, Math.min(uint8.length, 65536));
-    if (idx !== -1) {
-        let lineEnd = idx;
-        while (lineEnd < uint8.length && uint8[lineEnd] !== 0x0A && uint8[lineEnd] !== 0x0D) {
-            lineEnd++;
-        }
-        const valStart = idx + prefix.length;
-        const availableSpace = lineEnd - valStart;
-        const newStr = ' ' + softwareStr;
-        const encoded = new TextEncoder().encode(newStr);
-        if (encoded.length <= availableSpace) {
-            uint8.set(encoded, valStart);
-            for (let i = valStart + encoded.length; i < lineEnd; i++) {
-                uint8[i] = 0x20; // pad remainder with spaces so byte count & offsets never change
+
+    // 1. Inject softwareStr into %%Creator:
+    if (softwareStr) {
+        const prefix = '%%Creator:';
+        const idx = indexOfAsciiBytes(uint8, prefix, 0, Math.min(uint8.length, 65536));
+        if (idx !== -1) {
+            let lineEnd = idx;
+            while (lineEnd < uint8.length && uint8[lineEnd] !== 0x0A && uint8[lineEnd] !== 0x0D) {
+                lineEnd++;
+            }
+            const valStart = idx + prefix.length;
+            const availableSpace = lineEnd - valStart;
+            const newStr = ' ' + softwareStr;
+            const encoded = new TextEncoder().encode(newStr);
+            if (encoded.length <= availableSpace) {
+                uint8.set(encoded, valStart);
+                for (let i = valStart + encoded.length; i < lineEnd; i++) {
+                    uint8[i] = 0x20; // pad remainder with spaces so byte count & offsets never change
+                }
             }
         }
     }
+
+    // 2. Inject ownerName / PC Name into %%For:
+    if (ownerName && ownerName.trim()) {
+        const prefix = '%%For:';
+        const idx = indexOfAsciiBytes(uint8, prefix, 0, Math.min(uint8.length, 65536));
+        if (idx !== -1) {
+            let lineEnd = idx;
+            while (lineEnd < uint8.length && uint8[lineEnd] !== 0x0A && uint8[lineEnd] !== 0x0D) {
+                lineEnd++;
+            }
+            const valStart = idx + prefix.length;
+            const availableSpace = lineEnd - valStart;
+            const cleanOwner = ownerName.trim();
+            let forStr = ' (' + cleanOwner + ')';
+            let encoded = new TextEncoder().encode(forStr);
+            if (encoded.length > availableSpace && availableSpace > 4) {
+                const maxChars = Math.max(0, availableSpace - 3);
+                forStr = ' (' + cleanOwner.substring(0, maxChars) + ')';
+                encoded = new TextEncoder().encode(forStr);
+            }
+            if (encoded.length <= availableSpace) {
+                uint8.set(encoded, valStart);
+                for (let i = valStart + encoded.length; i < lineEnd; i++) {
+                    uint8[i] = 0x20; // pad remainder with spaces
+                }
+            }
+        }
+    }
+
     return uint8.buffer;
 }
 
@@ -2692,10 +2743,15 @@ function processVector(fileObj, mode) {
             const profKey = mode.replace('CUSTOM_', '').toLowerCase();
             const prof = window.getCustomProfile ? window.getCustomProfile(profKey) : null;
             const aiVersion = prof ? (prof.aiVersion || prof.version || "2024") : "2024";
+            const ownerName = prof ? (prof.name || "").trim() : "";
             if (window.getSoftwareString) {
                 const softwareStr = window.getSoftwareString("Illustrator", aiVersion);
+                let metaElements = `<meta name="generator" content="${escapeHtml(softwareStr)}" />`;
+                if (ownerName) {
+                    metaElements += `\n    <meta name="author" content="${escapeHtml(ownerName)}" />\n    <dc:creator xmlns:dc="http://purl.org/dc/elements/1.1/"><rdf:Seq xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:li>${escapeHtml(ownerName)}</rdf:li></rdf:Seq></dc:creator>`;
+                }
                 if (!cleanText.includes('<meta name="generator"')) {
-                    cleanText = cleanText.replace(/<svg\b([^>]*)>/i, `<svg$1>\n  <metadata>\n    <meta name="generator" content="${escapeHtml(softwareStr)}" />\n  </metadata>`);
+                    cleanText = cleanText.replace(/<svg\b([^>]*)>/i, `<svg$1>\n  <metadata>\n    ${metaElements}\n  </metadata>`);
                 }
             }
         }
@@ -2707,9 +2763,10 @@ function processVector(fileObj, mode) {
             const profKey = mode.replace('CUSTOM_', '').toLowerCase();
             const prof = window.getCustomProfile ? window.getCustomProfile(profKey) : null;
             const aiVersion = prof ? (prof.aiVersion || prof.version || "2024") : "2024";
+            const ownerName = prof ? (prof.name || "").trim() : "";
             if (window.getSoftwareString) {
                 const softwareStr = window.getSoftwareString("Illustrator", aiVersion);
-                cleanedBuffer = injectEpsCreatorString(cleanedBuffer, softwareStr);
+                cleanedBuffer = injectEpsCreatorAndForString(cleanedBuffer, softwareStr, ownerName);
             }
         }
         return new Blob([cleanedBuffer], { type: fileObj.type || 'application/postscript' });

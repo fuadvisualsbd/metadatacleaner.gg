@@ -186,7 +186,7 @@
                     </div>
                     <div>
                         <h2>Multi-PC Device Profiles</h2>
-                        <p class="modal-subtext">Configure 3 Multi-PC profiles. Each profile sets both <strong>Photoshop</strong> (for Raster images) and <strong>Illustrator</strong> (for Vectors) plus OS for seamless batch-spoofing.</p>
+                        <p class="modal-subtext">Configure up to 3 custom profiles. Enter your <strong>PC / Owner Name</strong> (which will stamp the Author/Owner in Vector & Image files), OS, Photoshop, and Illustrator versions.</p>
                     </div>
                 </div>
                 <button id="closeProfilesModalBtn" class="modal-close-btn">&times;</button>
@@ -207,8 +207,8 @@
             <div class="modal-body">
                 <div class="form-row">
                     <div class="form-group" style="flex: 2; min-width: 200px;">
-                        <label for="profNameInput"><i class='bx bx-rename'></i> Profile Label / PC Name</label>
-                        <input type="text" id="profNameInput" class="form-input" placeholder="e.g. PC 1 - Main Workstation">
+                        <label for="profNameInput"><i class='bx bx-desktop'></i> PC / Owner Name (Sets Owner in Vectors & EXIF)</label>
+                        <input type="text" id="profNameInput" class="form-input" placeholder="e.g. DESKTOP-MAIN, Fuad-PC, Studio-Rig">
                     </div>
 
                     <div class="form-group" style="flex: 1; min-width: 140px;">
@@ -267,11 +267,16 @@
                 </div>
             </div>
 
-            <div class="modal-footer">
-                <button type="button" class="btn btn-secondary" onclick="document.getElementById('profilesModal').style.display='none'">Cancel</button>
-                <button type="button" class="btn btn-primary" id="saveProfilesBtn">
-                    <i class='bx bx-save'></i> Save Profile Settings
+            <div class="modal-footer" style="display: flex; justify-content: space-between; align-items: center;">
+                <button type="button" class="btn btn-sm btn-danger" id="resetCurrentProfileBtn" title="Reset this profile slot to empty">
+                    <i class='bx bx-trash'></i> Clear Slot
                 </button>
+                <div style="display: flex; gap: 0.75rem;">
+                    <button type="button" class="btn btn-secondary" onclick="document.getElementById('profilesModal').style.display='none'">Cancel</button>
+                    <button type="button" class="btn btn-primary" id="saveProfilesBtn">
+                        <i class='bx bx-save'></i> Save Profile Settings
+                    </button>
+                </div>
             </div>
         </div>
     </div>

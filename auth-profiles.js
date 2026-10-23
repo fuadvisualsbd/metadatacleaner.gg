@@ -55,33 +55,62 @@ try {
 let currentUser = null;
 let allUsersList = [];
 
-// Default 3 Profiles
+// Default 3 Profiles (Empty by default — User customizes each)
 const DEFAULT_PROFILES = {
     profile_1: {
         id: "profile_1",
-        name: "PC 1 (Workstation)",
+        name: "",
         psVersion: "2024",
         aiVersion: "2024",
-        os: "Windows 11"
+        os: "Windows 11",
+        configured: false
     },
     profile_2: {
         id: "profile_2",
-        name: "PC 2 (Laptop)",
+        name: "",
         psVersion: "2023",
         aiVersion: "2023",
-        os: "Windows 10"
+        os: "Windows 10",
+        configured: false
     },
     profile_3: {
         id: "profile_3",
-        name: "PC 3 (Office)",
-        psVersion: "2020",
-        aiVersion: "2020",
-        os: "Windows 10"
+        name: "",
+        psVersion: "2021",
+        aiVersion: "2021",
+        os: "Windows 10",
+        configured: false
     }
 };
 
 let userProfiles = { ...DEFAULT_PROFILES };
 let activeTab = "profile_1";
+
+// Helper: Sanitize profile and strip legacy dummy defaults so slots start clean
+function sanitizeProfile(p, fallbackId) {
+    if (!p) return { id: fallbackId, name: "", psVersion: "2024", aiVersion: "2024", os: "Windows 11", configured: false };
+    const dummyNames = [
+        "pc 1 — photoshop 2024",
+        "pc 2 — illustrator 2023",
+        "pc 3 — photoshop 2020",
+        "pc 1 (workstation)",
+        "pc 2 (laptop)",
+        "pc 3 (office)",
+        "profile 1",
+        "profile 2",
+        "profile 3"
+    ];
+    const name = (p.name || "").trim();
+    const isDummy = !name || dummyNames.includes(name.toLowerCase());
+    return {
+        id: p.id || fallbackId,
+        name: isDummy ? "" : name,
+        psVersion: p.psVersion || p.version || "2024",
+        aiVersion: p.aiVersion || p.version || "2024",
+        os: p.os || "Windows 11",
+        configured: isDummy ? false : (p.configured !== false)
+    };
+}
 
 // Helper: Map Software + Version Year (2015-2026) to exact commercial Adobe strings
 export function getSoftwareString(software, version) {
@@ -131,7 +160,14 @@ async function loadProfiles() {
     try {
         const local = localStorage.getItem(getStorageKey());
         if (local) {
-            userProfiles = { ...DEFAULT_PROFILES, ...JSON.parse(local) };
+            const parsed = JSON.parse(local);
+            userProfiles = {
+                profile_1: sanitizeProfile(parsed.profile_1, "profile_1"),
+                profile_2: sanitizeProfile(parsed.profile_2, "profile_2"),
+                profile_3: sanitizeProfile(parsed.profile_3, "profile_3")
+            };
+        } else {
+            userProfiles = { ...DEFAULT_PROFILES };
         }
     } catch (e) {
         userProfiles = { ...DEFAULT_PROFILES };
@@ -142,7 +178,12 @@ async function loadProfiles() {
             const userDocRef = doc(db, "users", currentUser.uid);
             const snap = await getDoc(userDocRef);
             if (snap.exists() && snap.data().customProfiles) {
-                userProfiles = { ...DEFAULT_PROFILES, ...snap.data().customProfiles };
+                const cloud = snap.data().customProfiles;
+                userProfiles = {
+                    profile_1: sanitizeProfile(cloud.profile_1, "profile_1"),
+                    profile_2: sanitizeProfile(cloud.profile_2, "profile_2"),
+                    profile_3: sanitizeProfile(cloud.profile_3, "profile_3")
+                };
                 localStorage.setItem(getStorageKey(), JSON.stringify(userProfiles));
             } else {
                 await setDoc(userDocRef, { customProfiles: userProfiles }, { merge: true });
@@ -184,31 +225,50 @@ export function renderWorkspaceProfileButtons() {
     let html = "";
     ["profile_1", "profile_2", "profile_3"].forEach((key, idx) => {
         const prof = userProfiles[key] || DEFAULT_PROFILES[key];
-        const shortName = prof.name || `Profile ${idx + 1}`;
-        const psVer = prof.psVersion || prof.version || "2024";
-        const aiVer = prof.aiVersion || prof.version || "2024";
-        const osShort = (prof.os || "Windows 11") === "Windows 11" ? "Win11" : "Win10";
-        const titleDesc = `${shortName}: Photoshop ${psVer} (Raster) + Illustrator ${aiVer} (Vector) on ${prof.os || 'Windows 11'}`;
+        const isConfigured = Boolean(prof && prof.configured && prof.name && prof.name.trim());
 
-        html += `
-            <button class="btn btn-preset btn-profile-apply" id="btn-apply-${key}" data-profile="${key}" title="${escapeHtml(titleDesc)}">
-                <i class='bx bx-devices'></i>
-                <span class="btn-prof-title">${escapeHtml(shortName)}</span>
-                <span class="btn-prof-badge">PS${psVer} • AI${aiVer} • ${osShort}</span>
-            </button>
-        `;
+        if (isConfigured) {
+            const shortName = prof.name.trim();
+            const psVer = prof.psVersion || prof.version || "2024";
+            const aiVer = prof.aiVersion || prof.version || "2024";
+            const osShort = (prof.os || "Windows 11") === "Windows 11" ? "Win11" : "Win10";
+            const titleDesc = `${shortName}: Photoshop ${psVer} (Raster) + Illustrator ${aiVer} (Vector, Owner: ${shortName}) on ${prof.os || 'Windows 11'}`;
+
+            html += `
+                <button class="btn btn-preset btn-profile-apply" id="btn-apply-${key}" data-profile="${key}" data-configured="true" title="${escapeHtml(titleDesc)}">
+                    <i class='bx bx-devices'></i>
+                    <span class="btn-prof-title">${escapeHtml(shortName)}</span>
+                    <span class="btn-prof-badge">PS${psVer} • AI${aiVer} • ${osShort}</span>
+                </button>
+            `;
+        } else {
+            html += `
+                <button class="btn btn-preset btn-profile-empty" id="btn-apply-${key}" data-profile="${key}" data-configured="false" title="Profile ${idx + 1} is empty. Click to configure PC / Owner Name.">
+                    <i class='bx bx-plus-circle' style="color: var(--accent-primary);"></i>
+                    <span class="btn-prof-title">Profile ${idx + 1}</span>
+                    <span class="btn-prof-badge" style="color: var(--accent-primary); font-weight: 600;">+ Configure</span>
+                </button>
+            `;
+        }
     });
 
     container.innerHTML = html;
 
     ["profile_1", "profile_2", "profile_3"].forEach((key) => {
         const btn = document.getElementById(`btn-apply-${key}`);
-        if (btn && window.processFiles) {
+        if (btn) {
             btn.addEventListener("click", async function() {
-                const originalHtml = this.innerHTML;
-                this.innerHTML = `<i class='bx bx-loader-alt bx-spin'></i> Applying...`;
-                await window.processFiles(`CUSTOM_${key.toUpperCase()}`);
-                this.innerHTML = originalHtml;
+                const isConf = this.getAttribute("data-configured") === "true";
+                if (!isConf) {
+                    openProfilesModal(key);
+                    return;
+                }
+                if (window.processFiles) {
+                    const originalHtml = this.innerHTML;
+                    this.innerHTML = `<i class='bx bx-loader-alt bx-spin'></i> Applying...`;
+                    await window.processFiles(`CUSTOM_${key.toUpperCase()}`);
+                    this.innerHTML = originalHtml;
+                }
             });
         }
     });
@@ -347,6 +407,19 @@ function renderAdminUsersTable(users) {
 }
 
 // UI: Update Profile Modal Form Fields when tab changes
+function updateModalTabs() {
+    ["profile_1", "profile_2", "profile_3"].forEach((key, idx) => {
+        const btn = document.querySelector(`.profile-tab-btn[data-tab="${key}"]`);
+        if (btn) {
+            const p = userProfiles[key];
+            const isConf = Boolean(p && p.configured && p.name && p.name.trim());
+            const icon = isConf ? "bx-desktop" : "bx-plus-circle";
+            const label = isConf ? p.name.trim() : `Profile ${idx + 1} (Empty)`;
+            btn.innerHTML = `<i class='bx ${icon}'></i> ${escapeHtml(label)}`;
+        }
+    });
+}
+
 function updateModalFormFields(tabKey) {
     activeTab = tabKey;
     const prof = userProfiles[tabKey] || DEFAULT_PROFILES[tabKey];
@@ -357,25 +430,18 @@ function updateModalFormFields(tabKey) {
     const aiSelect = document.getElementById("profAiVersionSelect");
     const previewEl = document.getElementById("profOutputPreview");
 
+    const nameVal = (prof && prof.name) ? prof.name.trim() : "";
     const psVer = prof.psVersion || prof.version || "2024";
     const aiVer = prof.aiVersion || prof.version || "2024";
     const osVal = prof.os || "Windows 11";
 
-    if (nameInput) nameInput.value = prof.name || "";
+    if (nameInput) nameInput.value = nameVal;
     if (osSelect) osSelect.value = osVal;
     if (psSelect) psSelect.value = psVer;
     if (aiSelect) aiSelect.value = aiVer;
 
-    if (previewEl) {
-        const psStr = getSoftwareString("Photoshop", psVer);
-        const aiStr = getSoftwareString("Illustrator", aiVer);
-        previewEl.innerHTML = `
-            <div style="display: flex; flex-direction: column; gap: 6px;">
-                <div><i class='bx bx-image' style="color: var(--accent-primary);"></i> <strong>Raster Images (JPG/PNG/WebP):</strong> <code>${escapeHtml(psStr)}</code> on <code>${escapeHtml(osVal)}</code></div>
-                <div><i class='bx bx-vector' style="color: var(--accent-secondary);"></i> <strong>Vector Graphics (SVG/EPS/AI):</strong> <code>${escapeHtml(aiStr)}</code> on <code>${escapeHtml(osVal)}</code></div>
-            </div>
-        `;
-    }
+    updateModalPreview(nameVal, psVer, aiVer, osVal);
+    updateModalTabs();
 
     document.querySelectorAll(".profile-tab-btn").forEach(btn => {
         if (btn.getAttribute("data-tab") === tabKey) {
@@ -386,26 +452,66 @@ function updateModalFormFields(tabKey) {
     });
 }
 
+function updateModalPreview(nameVal, psVer, aiVer, osVal) {
+    const previewEl = document.getElementById("profOutputPreview");
+    if (!previewEl) return;
+
+    if (!nameVal) {
+        previewEl.innerHTML = `
+            <div style="color: var(--text-muted); font-size: 0.82rem; font-style: italic; display: flex; align-items: center; gap: 6px;">
+                <i class='bx bx-info-circle' style="color: var(--accent-primary); font-size: 1.1rem;"></i>
+                <span>This profile slot is currently empty. Enter your PC / Owner Name above to activate it.</span>
+            </div>
+        `;
+    } else {
+        const psStr = getSoftwareString("Photoshop", psVer);
+        const aiStr = getSoftwareString("Illustrator", aiVer);
+        previewEl.innerHTML = `
+            <div style="display: flex; flex-direction: column; gap: 6px;">
+                <div><i class='bx bx-user-check' style="color: var(--accent-primary);"></i> <strong>Vector Owner / EXIF Artist:</strong> <code>${escapeHtml(nameVal)}</code></div>
+                <div><i class='bx bx-image' style="color: var(--accent-primary);"></i> <strong>Raster Images (JPG/PNG/WebP):</strong> <code>${escapeHtml(psStr)}</code> on <code>${escapeHtml(osVal)}</code></div>
+                <div><i class='bx bx-vector' style="color: var(--accent-secondary);"></i> <strong>Vector Graphics (SVG/EPS/AI):</strong> <code>${escapeHtml(aiStr)}</code> (Owner: <code>${escapeHtml(nameVal)}</code>)</div>
+            </div>
+        `;
+    }
+}
+
 function readModalFormFields() {
     const nameInput = document.getElementById("profNameInput");
     const osSelect = document.getElementById("profOsSelect");
     const psSelect = document.getElementById("profPsVersionSelect");
     const aiSelect = document.getElementById("profAiVersionSelect");
 
+    const enteredName = nameInput ? nameInput.value.trim() : "";
+    const isConfigured = Boolean(enteredName);
     const psVer = psSelect ? psSelect.value : "2024";
     const aiVer = aiSelect ? aiSelect.value : "2024";
     const osVal = osSelect ? osSelect.value : "Windows 11";
 
     return {
         id: activeTab,
-        name: (nameInput ? nameInput.value.trim() : "") || `Profile ${activeTab.replace('profile_', '')}`,
+        name: enteredName,
         os: osVal,
         psVersion: psVer,
         aiVersion: aiVer,
+        configured: isConfigured,
         software: "Photoshop & Illustrator",
         version: `${psVer}/${aiVer}`
     };
 }
+
+export function openProfilesModal(tabKey = "profile_1") {
+    const profilesModal = document.getElementById("profilesModal");
+    if (profilesModal) {
+        updateModalFormFields(tabKey);
+        profilesModal.style.display = "flex";
+        setTimeout(() => {
+            const nameInput = document.getElementById("profNameInput");
+            if (nameInput) nameInput.focus();
+        }, 120);
+    }
+}
+window.openProfilesModal = openProfilesModal;
 
 // Setup Event Listeners
 function setupEvents() {
@@ -481,20 +587,31 @@ function setupEvents() {
             el.addEventListener("input", () => {
                 const currentData = readModalFormFields();
                 userProfiles[activeTab] = currentData;
-                const previewEl = document.getElementById("profOutputPreview");
-                if (previewEl) {
-                    const psStr = getSoftwareString("Photoshop", currentData.psVersion);
-                    const aiStr = getSoftwareString("Illustrator", currentData.aiVersion);
-                    previewEl.innerHTML = `
-                        <div style="display: flex; flex-direction: column; gap: 6px;">
-                            <div><i class='bx bx-image' style="color: var(--accent-primary);"></i> <strong>Raster Images (JPG/PNG/WebP):</strong> <code>${escapeHtml(psStr)}</code> on <code>${escapeHtml(currentData.os)}</code></div>
-                            <div><i class='bx bx-vector' style="color: var(--accent-secondary);"></i> <strong>Vector Graphics (SVG/EPS/AI):</strong> <code>${escapeHtml(aiStr)}</code> on <code>${escapeHtml(currentData.os)}</code></div>
-                        </div>
-                    `;
-                }
+                updateModalPreview(currentData.name, currentData.psVersion, currentData.aiVersion, currentData.os);
+                updateModalTabs();
             });
         }
     });
+
+    // Reset / Clear Current Profile Button
+    const resetCurrentProfileBtn = document.getElementById("resetCurrentProfileBtn");
+    if (resetCurrentProfileBtn) {
+        resetCurrentProfileBtn.addEventListener("click", async () => {
+            const slotNum = activeTab.replace('profile_', '');
+            if (confirm(`Are you sure you want to clear Profile ${slotNum}?`)) {
+                userProfiles[activeTab] = {
+                    id: activeTab,
+                    name: "",
+                    psVersion: "2024",
+                    aiVersion: "2024",
+                    os: "Windows 11",
+                    configured: false
+                };
+                await saveProfiles(userProfiles);
+                updateModalFormFields(activeTab);
+            }
+        });
+    }
 
     // Save Profiles Button
     const saveProfilesBtn = document.getElementById("saveProfilesBtn");
