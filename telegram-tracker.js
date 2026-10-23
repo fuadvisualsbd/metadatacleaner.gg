@@ -205,7 +205,11 @@ window.triggerCleanActionAlert = async function(mode, fileCount) {
         let modeLabel = mode;
         if (mode === "ALL") modeLabel = "🗑️ Clear All (Total Wipe)";
         else if (mode === "STOCK") modeLabel = "🛡️ Stock Safe (Keep Tags)";
-        else if (mode.startsWith("PRESET_")) modeLabel = `✨ Spoof Preset (${mode})`;
+        else if (mode.startsWith("CUSTOM_PROFILE_")) {
+            const profKey = mode.replace("CUSTOM_", "").toLowerCase();
+            const prof = window.getCustomProfile ? window.getCustomProfile(profKey) : null;
+            modeLabel = prof ? `💻 Multi-PC Profile (${prof.name} • ${prof.software} ${prof.version} / ${prof.os})` : `💻 Custom Profile (${mode})`;
+        } else if (mode.startsWith("PRESET_")) modeLabel = `✨ Spoof Preset (${mode})`;
 
         const message = 
 `⚡ <b>MetaCleaner Pro Clean Action!</b>

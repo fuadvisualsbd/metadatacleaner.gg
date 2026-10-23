@@ -32,10 +32,33 @@
                 <i class='bx bx-brush'></i>
                 <h1>MetaCleaner <span>Pro</span></h1>
             </div>
-            <div class="privacy-badge" style="display: flex; align-items: center; gap: 10px;">
-                <i class='bx bx-shield-quarter'></i>
-                <span>100% Client-Side • No Uploads</span>
-                <input type="password" id="secretCodeInput" placeholder="Code" style="background: rgba(255,255,255,0.7); border: 1px solid var(--border-color); border-radius: 4px; color: var(--text-primary); padding: 3px 8px; width: 65px; font-size: 12px; outline: none; opacity: 0.7; transition: all 0.3s;" onfocus="this.style.opacity=1; this.style.borderColor='var(--accent-primary)';" onblur="this.style.opacity=0.7; this.style.borderColor='var(--border-color)';">
+            
+            <div class="header-right">
+                <div class="privacy-badge">
+                    <i class='bx bx-shield-quarter'></i>
+                    <span>100% Client-Side</span>
+                    <input type="password" id="secretCodeInput" placeholder="Code" style="background: rgba(255,255,255,0.7); border: 1px solid var(--border-color); border-radius: 4px; color: var(--text-primary); padding: 3px 8px; width: 65px; font-size: 12px; outline: none; opacity: 0.7; transition: all 0.3s;" onfocus="this.style.opacity=1; this.style.borderColor='var(--accent-primary)';" onblur="this.style.opacity=0.7; this.style.borderColor='var(--border-color)';">
+                </div>
+
+                <!-- Google Auth & User Profile Container -->
+                <div id="authContainer" class="auth-container">
+                    <button id="googleLoginBtn" class="btn btn-auth btn-sm" title="Sign in with Google to sync your profiles across PCs">
+                        <i class='bx bxl-google'></i> <span>Google Sign In</span>
+                    </button>
+                    
+                    <div id="userProfileBar" class="user-profile-bar" style="display: none;">
+                        <button id="openProfilesModalBtn" class="btn btn-sm btn-profile-manage" title="Manage Custom Multi-PC Profiles">
+                            <i class='bx bx-devices'></i> <span>3 Profiles</span>
+                        </button>
+                        <div class="user-avatar-wrap">
+                            <img id="userAvatarImg" src="" alt="Avatar" class="user-avatar" />
+                            <span id="userNameText" class="user-name">User</span>
+                            <button id="googleLogoutBtn" class="btn-logout-icon" title="Sign Out">
+                                <i class='bx bx-log-out'></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
             </div>
         </header>
 
@@ -58,14 +81,32 @@
                 
                 <!-- Quick Actions -->
                 <div class="quick-actions glass-panel">
-                    <h3>Clean Modes</h3>
-                    <div class="action-buttons">
-                        <button class="btn btn-danger" id="btn-clear-all" title="Removes ALL metadata">
-                            <i class='bx bx-trash'></i> Clear All
-                        </button>
-                        <button class="btn btn-success" id="btn-keep-stock" title="Removes private/camera/C2PA data, keeps Title, Keywords & Stock tags">
-                            <i class='bx bx-check-shield'></i> Stock Safe
-                        </button>
+                    <div class="quick-actions-row">
+                        <!-- Clean Modes -->
+                        <div class="action-group">
+                            <span class="group-label"><i class='bx bx-shield-quarter'></i> Clean Modes</span>
+                            <div class="action-buttons">
+                                <button class="btn btn-danger" id="btn-clear-all" title="Removes ALL metadata">
+                                    <i class='bx bx-trash'></i> Clear All
+                                </button>
+                                <button class="btn btn-success" id="btn-keep-stock" title="Removes private/camera/C2PA data, keeps Title, Keywords & Stock tags">
+                                    <i class='bx bx-check-shield'></i> Stock Safe
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Multi-PC Device Profiles -->
+                        <div class="action-group action-group-profiles">
+                            <div class="group-label-row">
+                                <span class="group-label" style="color: var(--accent-primary);"><i class='bx bx-devices'></i> Multi-PC Spoof Profiles (1-Click)</span>
+                                <button id="btn-edit-profiles" class="btn-text-action" title="Configure 3 PC Profiles">
+                                    <i class='bx bx-cog'></i> Edit Profiles
+                                </button>
+                            </div>
+                            <div class="action-buttons" id="customProfilesButtons">
+                                <!-- Dynamic profile buttons injected by auth-profiles.js -->
+                            </div>
+                        </div>
                     </div>
 
                     <!-- Hidden Spoof Presets -->
@@ -130,8 +171,97 @@
         </footer>
     </div>
 
+    <!-- Multi-PC Device Profiles Modal -->
+    <div id="profilesModal" class="modal-overlay" style="display: none;">
+        <div class="modal-card glass-panel">
+            <div class="modal-header">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <div class="modal-icon-badge">
+                        <i class='bx bx-devices'></i>
+                    </div>
+                    <div>
+                        <h2>Multi-PC Device Profiles</h2>
+                        <p class="modal-subtext">Set up 3 custom profiles (Adobe Software + Version 2015-2026 + OS) to batch-spoof files created on different PCs.</p>
+                    </div>
+                </div>
+                <button id="closeProfilesModalBtn" class="modal-close-btn">&times;</button>
+            </div>
+
+            <div class="modal-profile-tabs">
+                <button class="profile-tab-btn active" data-tab="profile_1">
+                    <i class='bx bx-laptop'></i> Profile 1
+                </button>
+                <button class="profile-tab-btn" data-tab="profile_2">
+                    <i class='bx bx-desktop'></i> Profile 2
+                </button>
+                <button class="profile-tab-btn" data-tab="profile_3">
+                    <i class='bx bx-server'></i> Profile 3
+                </button>
+            </div>
+
+            <div class="modal-body">
+                <div class="form-group">
+                    <label for="profNameInput">Profile Label / PC Name</label>
+                    <input type="text" id="profNameInput" class="form-input" placeholder="e.g. Account 1 — Home Workstation">
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group" style="flex: 1; min-width: 140px;">
+                        <label for="profSoftwareSelect">Adobe Software</label>
+                        <select id="profSoftwareSelect" class="form-select">
+                            <option value="Photoshop">Adobe Photoshop</option>
+                            <option value="Illustrator">Adobe Illustrator</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group" style="flex: 1; min-width: 140px;">
+                        <label for="profVersionSelect">Version (2015 — 2026)</label>
+                        <select id="profVersionSelect" class="form-select">
+                            <option value="2026">2026 (Next-Gen)</option>
+                            <option value="2025">2025</option>
+                            <option value="2024">2024</option>
+                            <option value="2023">2023</option>
+                            <option value="2022">2022</option>
+                            <option value="2021">2021</option>
+                            <option value="2020">2020</option>
+                            <option value="2019">2019 (CC 2019)</option>
+                            <option value="2018">2018 (CC 2018)</option>
+                            <option value="2017">2017 (CC 2017)</option>
+                            <option value="2016">2016 (CC 2015.5)</option>
+                            <option value="2015">2015 (CC 2015)</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group" style="flex: 1; min-width: 140px;">
+                        <label for="profOsSelect">Operating System</label>
+                        <select id="profOsSelect" class="form-select">
+                            <option value="Windows 11">Windows 11</option>
+                            <option value="Windows 10">Windows 10</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="profile-preview-box" id="profOutputPreview">
+                    <!-- Live preview string injected dynamically -->
+                </div>
+
+                <div class="modal-sync-info" id="modalSyncStatus">
+                    <i class='bx bx-info-circle'></i> Saved locally in browser. Sign in with Google to sync across PCs.
+                </div>
+            </div>
+
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" onclick="document.getElementById('profilesModal').style.display='none'">Cancel</button>
+                <button type="button" class="btn btn-primary" id="saveProfilesBtn">
+                    <i class='bx bx-save'></i> Save Profile Settings
+                </button>
+            </div>
+        </div>
+    </div>
+
     <!-- Scripts -->
     <script src="app.js"></script>
+    <script type="module" src="auth-profiles.js"></script>
     <script src="telegram-tracker.js"></script>
 </body>
 </html>

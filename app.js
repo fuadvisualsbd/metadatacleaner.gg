@@ -2306,6 +2306,7 @@ async function processFiles(mode) {
         window.triggerCleanActionAlert(mode, filesList.length);
     }
 }
+window.processFiles = processFiles;
 
 async function processImage(fileObj, mode) {
     let finalDataURL = fileObj.previewURL;
@@ -2388,6 +2389,80 @@ async function processImage(fileObj, mode) {
             } catch (e) {
                 console.error("PNG spoof error", e);
             }
+        }
+    } else if (mode.startsWith('CUSTOM_PROFILE_')) {
+        const profKey = mode.replace('CUSTOM_', '').toLowerCase();
+        const prof = window.getCustomProfile ? window.getCustomProfile(profKey) : null;
+        let softwareStr = "Adobe Photoshop 25.0 (Windows)";
+        let osStr = "Windows 11";
+        if (prof && window.getSoftwareString) {
+            softwareStr = window.getSoftwareString(prof.software, prof.version);
+            osStr = prof.os || "Windows 11";
+        }
+
+        const ext = getFileExtension(fileObj.name);
+        const isJpeg = fileObj.type === 'image/jpeg' || fileObj.type === 'image/jpg' || ext === 'jpg' || ext === 'jpeg';
+        const isPng = fileObj.type === 'image/png' || ext === 'png';
+        const isWebp = fileObj.type === 'image/webp' || ext === 'webp';
+
+        if (isJpeg) {
+            try {
+                // Stock Safe clean first to preserve user Title & Keywords while wiping GPS, camera serials, and C2PA
+                const strippedBuf = stripJpegForStockSafe(fileObj.originalArrayBuffer);
+                const fullStr = uint8ToBinaryString(new Uint8Array(strippedBuf));
+                let exifObj = {};
+                try {
+                    exifObj = piexif.load(fullStr);
+                } catch(e) {
+                    exifObj = {"0th": {}, "Exif": {}, "GPS": {}};
+                }
+                if (!exifObj["0th"]) exifObj["0th"] = {};
+                exifObj["0th"][piexif.ImageIFD.Software] = softwareStr;
+                exifObj["0th"][piexif.ImageIFD.HostComputer] = osStr;
+                const exifBytes = piexif.dump(exifObj);
+                const inserted = piexif.insert(exifBytes, fullStr);
+                const newBytes = new Uint8Array(inserted.length);
+                for (let i = 0; i < inserted.length; i++) {
+                    newBytes[i] = inserted.charCodeAt(i) & 0xFF;
+                }
+                return new Blob([newBytes], { type: 'image/jpeg' });
+            } catch(e) {
+                console.error("Custom profile JPEG spoof error:", e);
+                let cleanCanvasURL = await cleanViaCanvas(fileObj);
+                const zeroth = {};
+                zeroth[piexif.ImageIFD.Software] = softwareStr;
+                zeroth[piexif.ImageIFD.HostComputer] = osStr;
+                const exifObj = {"0th": zeroth};
+                const exifBytes = piexif.dump(exifObj);
+                finalDataURL = piexif.insert(exifBytes, cleanCanvasURL);
+            }
+        } else if (isPng) {
+            try {
+                // Stock Safe clean first
+                const strippedBuf = stripPngC2pa(fileObj.originalArrayBuffer);
+                const withSoftware = await injectPngTextChunk(strippedBuf, "Software", softwareStr);
+                const res = await fetch(withSoftware);
+                const buf = await res.arrayBuffer();
+                finalDataURL = await injectPngXmpChunk(buf, softwareStr, osStr);
+            } catch (e) {
+                console.error("Custom profile PNG spoof error:", e);
+                let cleanDataURL = await cleanViaCanvas(fileObj);
+                const res = await fetch(cleanDataURL);
+                let buf = await res.arrayBuffer();
+                const withSoftware = await injectPngTextChunk(buf, "Software", softwareStr);
+                const res2 = await fetch(withSoftware);
+                const buf2 = await res2.arrayBuffer();
+                finalDataURL = await injectPngXmpChunk(buf2, softwareStr, osStr);
+            }
+        } else if (isWebp) {
+            try {
+                const strippedBuf = stripWebpC2pa(fileObj.originalArrayBuffer);
+                return new Blob([strippedBuf], { type: 'image/webp' });
+            } catch (e) {
+                finalDataURL = await cleanViaCanvas(fileObj);
+            }
+        } else {
+            finalDataURL = await cleanViaCanvas(fileObj);
         }
     }
 
@@ -2581,14 +2656,60 @@ async function processVideo(fileObj, mode) {
     return new Blob([cleanedBuffer], { type: fileObj.type || 'video/mp4' });
 }
 
+function injectEpsCreatorString(arrayBuffer, softwareStr) {
+    if (!arrayBuffer || arrayBuffer.byteLength < 16) return arrayBuffer;
+    const uint8 = new Uint8Array(arrayBuffer.slice(0));
+    const prefix = '%%Creator:';
+    const idx = indexOfAsciiBytes(uint8, prefix, 0, Math.min(uint8.length, 65536));
+    if (idx !== -1) {
+        let lineEnd = idx;
+        while (lineEnd < uint8.length && uint8[lineEnd] !== 0x0A && uint8[lineEnd] !== 0x0D) {
+            lineEnd++;
+        }
+        const valStart = idx + prefix.length;
+        const availableSpace = lineEnd - valStart;
+        const newStr = ' ' + softwareStr;
+        const encoded = new TextEncoder().encode(newStr);
+        if (encoded.length <= availableSpace) {
+            uint8.set(encoded, valStart);
+            for (let i = valStart + encoded.length; i < lineEnd; i++) {
+                uint8[i] = 0x20; // pad remainder with spaces so byte count & offsets never change
+            }
+        }
+    }
+    return uint8.buffer;
+}
+
 function processVector(fileObj, mode) {
+    const isCustom = mode.startsWith('CUSTOM_PROFILE_');
+    const effectiveMode = isCustom ? 'STOCK' : mode;
+
     if (isSvg(fileObj.originalFile)) {
         const text = new TextDecoder('utf-8').decode(fileObj.originalArrayBuffer);
-        const cleanText = cleanSvgFile(text, mode);
+        let cleanText = cleanSvgFile(text, effectiveMode);
+
+        if (isCustom) {
+            const profKey = mode.replace('CUSTOM_', '').toLowerCase();
+            const prof = window.getCustomProfile ? window.getCustomProfile(profKey) : null;
+            if (prof && window.getSoftwareString) {
+                const softwareStr = window.getSoftwareString(prof.software, prof.version);
+                if (!cleanText.includes('<meta name="generator"')) {
+                    cleanText = cleanText.replace(/<svg\b([^>]*)>/i, `<svg$1>\n  <metadata>\n    <meta name="generator" content="${escapeHtml(softwareStr)}" />\n  </metadata>`);
+                }
+            }
+        }
         return new Blob([cleanText], { type: 'image/svg+xml' });
     } else {
         // EPS / AI — 100% Byte-Safe in-place buffer cleaning
-        const cleanedBuffer = cleanEpsBuffer(fileObj.originalArrayBuffer, mode);
+        let cleanedBuffer = cleanEpsBuffer(fileObj.originalArrayBuffer, effectiveMode);
+        if (isCustom) {
+            const profKey = mode.replace('CUSTOM_', '').toLowerCase();
+            const prof = window.getCustomProfile ? window.getCustomProfile(profKey) : null;
+            if (prof && window.getSoftwareString) {
+                const softwareStr = window.getSoftwareString(prof.software, prof.version);
+                cleanedBuffer = injectEpsCreatorString(cleanedBuffer, softwareStr);
+            }
+        }
         return new Blob([cleanedBuffer], { type: fileObj.type || 'application/postscript' });
     }
 }
